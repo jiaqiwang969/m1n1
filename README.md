@@ -1,141 +1,229 @@
-# m1n1: A bootloader and experimentation playground for Apple Silicon
+# m1n1 Workspace: Guest4K Redroid Mainline
 
-## Building
+This repository is still the upstream `m1n1` source tree, but in this workspace it is used as the
+home for one specific local system project:
 
-You need an `aarch64-linux-gnu-gcc` cross-compiler toolchain (or a native one, if running on ARM64).
+- `16K` Asahi Linux host
+- `4K` Ubuntu microVM guest
+- Redroid running inside the `4K` guest
+- Douyin installed and usable inside that guest
 
-```shell
-$ git clone --recursive https://github.com/AsahiLinux/m1n1.git
-$ cd m1n1
-$ make
+This path is the only project mainline.
+
+Everything else, especially the older direct-host Redroid path, is now treated as:
+
+- historical material
+- frozen experiments
+- not the default direction for future work
+
+## Mainline Goal
+
+The goal of this workspace is not "all possible Redroid shapes".
+
+The goal is:
+
+1. keep the `Guest4K` stack stable
+2. keep Douyin usable inside it
+3. improve interaction quality, audio quality, and day-to-day operability
+4. document that path clearly enough that future work does not drift into dead ends
+
+## Current Mainline
+
+The verified runtime today is:
+
+- host: `wjq@192.168.1.107`
+- host OS: Asahi Linux
+- host page size: `16384`
+- microVM dir: `/home/wjq/vm4k/ubuntu24k`
+- guest page size: `4096`
+- operator script: `redroid/scripts/redroid_guest4k_107.sh`
+- default image: `localhost/redroid4k-root:alsa-hal-ranchu-exp2`
+- guest container: `redroid16kguestprobe`
+- host-visible guest ADB: `127.0.0.1:5556`
+- host-visible guest VNC: `127.0.0.1:5901`
+
+This is the baseline that should be protected.
+
+## What Already Works
+
+The following has already been proven on the `Guest4K` mainline:
+
+- the guest really runs with `PAGE_SIZE=4096`
+- Android 16 boots to `sys.boot_completed=1`
+- `surfaceflinger` and HWC stay up
+- the guest graphics path is stable enough for real use
+- the display baseline is portrait and phone-shaped
+- VNC access works on the guest path
+- Douyin is installed
+- Douyin can be launched and interacted with
+- guest audio is exported out to the host through PipeWire
+- actual playback sound can be heard on the host side
+
+In plain language: the mainline path is already usable.
+
+## Current Mainline Problems
+
+The remaining work is now optimization and hardening on the `Guest4K` path, not a rebuild from
+scratch.
+
+The current known problems are:
+
+### 1. Audio still needs polishing
+
+- sound is already routed correctly
+- but playback can still stutter or feel unstable during longer sessions
+
+### 2. Viewer and interaction still need polishing
+
+- VNC viewing works
+- but window sizing, phone-frame feel, and interaction smoothness are still not ideal
+
+### 3. Douyin runtime still needs day-to-day hardening
+
+- the app is installed and usable
+- but long-session smoothness, prompt handling, and recovery behavior still need cleanup
+
+### 4. Operator workflow still needs cleanup
+
+- the main script works
+- but restart, verify, viewer, and recovery flows should be made more predictable and better
+  documented
+
+### 5. Documentation must stay aligned with the mainline
+
+- future notes should describe the `Guest4K` path first
+- old side tracks should not dominate the narrative
+
+## Mainline Operator
+
+Primary entry point:
+
+- `redroid/scripts/redroid_guest4k_107.sh`
+
+Supported actions:
+
+- `vm-start`
+- `vm-stop`
+- `vm-status`
+- `restart`
+- `restart-preserve-data`
+- `status`
+- `verify`
+- `viewer`
+- `douyin-install`
+- `douyin-start`
+- `douyin-diagnose`
+
+Recommended daily flow:
+
+```bash
+export SUDO_PASS='...'
+
+zsh redroid/scripts/redroid_guest4k_107.sh vm-start
+zsh redroid/scripts/redroid_guest4k_107.sh restart
+zsh redroid/scripts/redroid_guest4k_107.sh verify
+zsh redroid/scripts/redroid_guest4k_107.sh viewer
 ```
 
-To build on a native ARM64 machine:
-* On Linux, use `make ARCH=`.
-* On macOS using Homebrew:
-```shell
-$ brew install llvm lld
-$ make
-```
-* On macOS using MacPorts:
-```shell
-$ sudo port install llvm clang
-$ sudo port select llvm llvm-mp-<version>
-$ make
+If installed app state should be preserved:
+
+```bash
+zsh redroid/scripts/redroid_guest4k_107.sh restart-preserve-data
 ```
 
-The output will be in `build/m1n1.macho`.
+Douyin flow:
 
-To build verbosely, use `make V=1`.
+```bash
+LOCAL_DOUYIN_APK_PATH=/path/to/douyin.apk \
+zsh redroid/scripts/redroid_guest4k_107.sh douyin-install
 
-### Building using the container setup
-
-If you have a container runtime installed, like Podman or Docker, you can make use of the compose setup, which contains all build dependencies.
-
-```shell
-$ git clone --recursive https://github.com/AsahiLinux/m1n1.git
-$ cd m1n1
-$ podman-compose run m1n1 make
-$ # or
-$ docker-compose run m1n1 make
+zsh redroid/scripts/redroid_guest4k_107.sh douyin-start
+zsh redroid/scripts/redroid_guest4k_107.sh douyin-diagnose
 ```
 
-## Usage
+If the APK is already staged on `192.168.1.107`, leave `LOCAL_DOUYIN_APK_PATH` unset and the
+default remote path `/tmp/douyin.apk` will be used.
 
-Our [wiki](https://asahilinux.org/docs/sw/m1n1-user-guide/) has more information on how to
-use m1n1.
+## Mainline Technical Shape
 
-To install on an OS container based on macOS <12.1, use `m1n1.macho`:
+The current `Guest4K` shape should be treated as intentional:
 
-```shell
-kmutil configure-boot -c m1n1.macho -v <path to your OS volume>
-```
+- full guest `/dev/dri` exposure inside the guest container
+- `guest-all-dri` graphics profile
+- isolated container networking with explicit published ports
+- no default `--network host` inside the guest container
+- real virtual audio device in the microVM
+- host PipeWire as the audio sink
 
-To install on an OS container based on macOS >=12.1, use `m1n1.bin`:
+This shape won because it is the one that actually converged into a usable runtime.
 
-```shell
-kmutil configure-boot -c m1n1.bin --raw --entry-point 2048 --lowest-virtual-address 0 -v <path to your OS volume>
-```
+## Why This Is The Mainline
 
-## Payloads
+This path is the mainline because it solved the real product problem:
 
-m1n1 supports running payloads by simple concatenation:
+- Android boots
+- graphics stays up
+- Douyin installs
+- Douyin runs
+- sound comes out
 
-```shell
-$ cat build/m1n1.macho Image.gz build/dtb/apple-j274.dtb initramfs.cpio.gz > m1n1-payload.macho
-$ cat build/m1n1.bin Image.gz build/dtb/apple-j274.dtb initramfs.cpio.gz > m1n1-payload.bin
-```
+That is the project center of gravity now.
 
-Supported payload file formats:
+Future work should improve this path instead of reopening lower-value architecture detours by
+default.
 
-* Kernel images (or compatible). Must be compressed or last payload.
-* Devicetree blobs (FDT). May be uncompressed or compressed.
-* Initramfs cpio images. Must be compressed.
+## Frozen Historical Path
 
-Supported compression formats:
+The old direct-host Redroid path still exists in the repository, but it is not the mainline.
 
-* gzip
-* xz
+Treat it as:
 
-## License
+- archive
+- reference material
+- experimental branch only when explicitly requested
 
-m1n1 is licensed under the MIT license, as included in the [LICENSE](LICENSE) file.
+Do not treat it as the default fix direction.
 
-* Copyright The Asahi Linux Contributors
+Relevant older script:
 
-Please see the Git history for authorship information.
+- `redroid/scripts/redroid_root_safe_107.sh`
 
-Portions of m1n1 are based on mini:
+That script is kept for history and occasional comparison, not as the default operator path.
 
-* Copyright (C) 2008-2010 Hector Martin "marcan" <marcan@marcan.st>
-* Copyright (C) 2008-2010 Sven Peter <sven@svenpeter.dev>
-* Copyright (C) 2008-2010 Andre Heider <a.heider@gmail.com>
+## Repository Layout
 
-m1n1 embeds libfdt, which is dual [BSD](3rdparty_licenses/LICENSE.BSD-2.libfdt) and
-[GPL-2](3rdparty_licenses/LICENSE.GPL-2) licensed and copyright:
+Upstream `m1n1` remains in its original layout:
 
-* Copyright (C) 2014 David Gibson <david@gibson.dropbear.id.au>
-* Copyright (C) 2018 embedded brains GmbH
-* Copyright (C) 2006-2012 David Gibson, IBM Corporation.
-* Copyright (C) 2012 David Gibson, IBM Corporation.
-* Copyright 2012 Kim Phillips, Freescale Semiconductor.
-* Copyright (C) 2016 Free Electrons
-* Copyright (C) 2016 NextThing Co.
+- `src/`
+- `proxyclient/`
+- `rust/`
+- `tools/`
+- `Makefile`
 
-The ADT code in mini is also based on libfdt and subject to the same license.
+The local Redroid workspace layer lives here:
 
-m1n1 embeds [minlzma](https://github.com/ionescu007/minlzma), which is
-[MIT](3rdparty_licenses/LICENSE.minlzma) licensed and copyright:
+- `redroid/scripts/`
+- `redroid/profiles/`
+- `redroid/tools/`
+- `docs/guides/`
+- `docs/plans/`
+- `tests/redroid/`
+- `tmp/`
 
-* Copyright (c) 2020 Alex Ionescu
+## Working Rule For Future Changes
 
-m1n1 embeds a slightly modified version of [tinf](https://github.com/jibsen/tinf), which is
-[ZLIB](3rdparty_licenses/LICENSE.tinf) licensed and copyright:
+When deciding what to work on next, assume this priority order:
 
-* Copyright (c) 2003-2019 Joergen Ibsen
+1. `Guest4K` runtime stability
+2. Douyin usability on `Guest4K`
+3. audio/video/interaction polish on `Guest4K`
+4. operator and documentation cleanup for `Guest4K`
 
-m1n1 embeds portions taken from
-[arm-trusted-firmware](https://github.com/ARM-software/arm-trusted-firmware), which is
-[BSD](3rdparty_licenses/LICENSE.BSD-3.arm) licensed and copyright:
+Anything outside that order should be treated as secondary unless explicitly requested.
 
-* Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
+## Status Summary
 
-m1n1 embeds [Doug Lea's malloc](ftp://gee.cs.oswego.edu/pub/misc/malloc.c) (dlmalloc), which is in
-the public domain ([CC0](3rdparty_licenses/LICENSE.CC0)).
+Current status in one sentence:
 
-m1n1 embeds portions of [PDCLib](https://github.com/DevSolar/pdclib), which is in the public
-domain ([CC0](3rdparty_licenses/LICENSE.CC0)).
-
-m1n1 embeds the [Source Code Pro](https://github.com/adobe-fonts/source-code-pro) font, which is
-licensed under the [OFL-1.1](3rdparty_licenses/LICENSE.OFL-1.1) license and copyright:
-
-* Copyright 2010-2019 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'. All Rights Reserved. Source is a trademark of Adobe in the United States and/or other countries.
-* This Font Software is licensed under the SIL Open Font License, Version 1.1.
-
-m1n1 embeds portions of the [dwc3 usb linux driver](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/usb/dwc3/core.h?id=7bc5a6ba369217e0137833f5955cf0b0f08b0712), which was [BSD-or-GPLv2 dual-licensed](3rdparty_licenses/LICENSE.BSD-3.dwc3) and copyright
-* Copyright (C) 2010-2011 Texas Instruments Incorporated - http://www.ti.com
-
-m1n1 embeds portions of [musl-libc](https://musl.libc.org/)'s floating point library, which are MIT licensed and copyright
-* Copyright (c) 2017-2018, Arm Limited.
-
-m1n1 embeds some rust crates. Licenses can be found in the vendor directory for every crate.
+`Guest4K` is already the working system; the remaining job is polish, hardening, and focused
+iteration on that mainline.
