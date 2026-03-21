@@ -368,11 +368,36 @@ EOF
   run_remote "bash -lc ${(qqq)wait_cmd}"
 }
 
+normalize_android_display_cmd() {
+  cat <<EOF
+adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+adb -s ${ADB_SERIAL} shell wm size reset >/dev/null 2>&1 || true
+adb -s ${ADB_SERIAL} shell wm density reset >/dev/null 2>&1 || true
+adb -s ${ADB_SERIAL} shell settings delete global display_size_forced >/dev/null 2>&1 || true
+adb -s ${ADB_SERIAL} shell settings delete secure display_density_forced >/dev/null 2>&1 || true
+adb -s ${ADB_SERIAL} shell wm size 2>/dev/null || true
+adb -s ${ADB_SERIAL} shell wm density 2>/dev/null || true
+EOF
+}
+
+normalize_android_display() {
+  local cmd
+
+  cmd="$(normalize_android_display_cmd)"
+  log "resetting Android display overrides on ${ADB_SERIAL}"
+  run_remote "bash -lc ${(qqq)cmd}"
+}
+
+post_boot_prepare() {
+  normalize_android_display
+  recover_host_audio_stream
+}
+
 ensure_android_ready() {
   wait_for_guest_ssh
   connect_adb
   wait_for_boot
-  recover_host_audio_stream
+  post_boot_prepare
 }
 
 vnc_banner_probe_cmd() {
@@ -576,7 +601,7 @@ EOF
   run_guest_sudo "${guest_cmd}"
   connect_adb
   wait_for_boot
-  recover_host_audio_stream
+  post_boot_prepare
 }
 
 show_status() {
@@ -609,7 +634,7 @@ EOF
 
   connect_adb
   wait_for_boot
-  recover_host_audio_stream
+  post_boot_prepare
 
   boot_cmd=$(cat <<EOF
 timeout 5 adb -s ${ADB_SERIAL} shell getprop sys.boot_completed 2>&1

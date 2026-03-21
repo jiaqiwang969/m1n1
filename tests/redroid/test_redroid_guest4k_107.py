@@ -215,6 +215,38 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("socket.create_connection((", stdout)
         self.assertIn("5901), timeout=5)", stdout)
 
+    def test_restart_dry_run_resets_android_display_overrides_after_boot(self) -> None:
+        result = self.run_script("--dry-run", "restart")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("adb -s 127.0.0.1:5556 shell wm size reset", stdout)
+        self.assertIn("adb -s 127.0.0.1:5556 shell wm density reset", stdout)
+        self.assertIn(
+            "adb -s 127.0.0.1:5556 shell settings delete global display_size_forced",
+            stdout,
+        )
+        self.assertIn(
+            "adb -s 127.0.0.1:5556 shell settings delete secure display_density_forced",
+            stdout,
+        )
+
+    def test_verify_dry_run_resets_android_display_overrides_after_boot(self) -> None:
+        result = self.run_script("--dry-run", "verify")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("adb -s 127.0.0.1:5556 shell wm size reset", stdout)
+        self.assertIn("adb -s 127.0.0.1:5556 shell wm density reset", stdout)
+        self.assertIn(
+            "adb -s 127.0.0.1:5556 shell settings delete global display_size_forced",
+            stdout,
+        )
+        self.assertIn(
+            "adb -s 127.0.0.1:5556 shell settings delete secure display_density_forced",
+            stdout,
+        )
+
     def test_viewer_dry_run_defaults_to_tigervnc_and_cleans_legacy_screencap_viewer(self) -> None:
         result = self.run_script("--dry-run", "viewer")
 
@@ -343,6 +375,8 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
+        self.assertIn("adb -s 127.0.0.1:5556 shell wm size reset", stdout)
+        self.assertIn("adb -s 127.0.0.1:5556 shell wm density reset", stdout)
         self.assertIn("am force-stop com.ss.android.ugc.aweme", stdout)
         self.assertIn("am start -W -n com.ss.android.ugc.aweme/.splash.SplashActivity", stdout)
         self.assertIn("pidof com.ss.android.ugc.aweme", stdout)
