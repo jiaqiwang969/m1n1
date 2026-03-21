@@ -194,8 +194,9 @@ TARGET := m1n1.macho
 TARGET_RAW := m1n1.bin
 
 DEPDIR := build/.deps
+REDROID_GUEST4K_SCRIPT := zsh redroid/scripts/redroid_guest4k_107.sh
 
-.PHONY: all clean format invoke_cc always_rebuild
+.PHONY: all clean format invoke_cc always_rebuild dev-up dev-verify dev-view dev-douyin dev
 all: build/$(TARGET) build/$(TARGET_RAW)
 clean:
 	rm -rf build/* build/.deps
@@ -207,6 +208,20 @@ rustfmt:
 	cd rust && cargo fmt
 rustfmt-check:
 	cd rust && cargo fmt --check
+dev-up:
+	$(REDROID_GUEST4K_SCRIPT) vm-start
+	$(REDROID_GUEST4K_SCRIPT) restart-preserve-data
+
+dev-verify:
+	$(REDROID_GUEST4K_SCRIPT) verify
+
+dev-view:
+	$(REDROID_GUEST4K_SCRIPT) viewer
+
+dev-douyin:
+	$(REDROID_GUEST4K_SCRIPT) douyin-start
+
+dev: dev-up dev-verify dev-view dev-douyin
 
 build/$(RUST_LIB): rust/src/*.rs rust/src/gpu/*.rs rust/src/gpu/hw/*.rs rust/Cargo.toml rust/Cargo.lock
 	$(QUIET)echo "  RS    $@"

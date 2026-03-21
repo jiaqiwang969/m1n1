@@ -105,6 +105,27 @@ Primary entry point:
 
 - `redroid/scripts/redroid_guest4k_107.sh`
 
+One-command mainline bring-up:
+
+```bash
+SUDO_PASS='...' make dev
+```
+
+That expands to the current Guest4K startup sequence:
+
+- `vm-start`
+- `restart-preserve-data`
+- `verify`
+- `viewer`
+- `douyin-start`
+
+If you want the same flow in separate steps, use:
+
+- `make dev-up`
+- `make dev-verify`
+- `make dev-view`
+- `make dev-douyin`
+
 Supported actions:
 
 - `vm-start`
