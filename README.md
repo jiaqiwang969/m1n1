@@ -71,10 +71,15 @@ The current known problems are:
 ### 1. Audio still needs polishing
 
 - sound is already routed correctly
-- but playback can still stutter or feel unstable during longer sessions
+- host recovery now follows the current PipeWire default sink instead of forcing a headphone-only path
+- playback can still stutter or feel unstable during longer sessions
+- the remaining artifact currently sounds more like low-frequency distortion or intermittent rumble than a full-band failure
+- future audio work should start with captured samples plus FFT analysis instead of blind tuning
 
 ### 2. Viewer and interaction still need polishing
 
+- TigerVNC is now the default viewer path
+- the legacy Python `adb screencap` viewer is kept only as an explicit fallback via `VIEWER_MODE=python`
 - VNC viewing works
 - but window sizing, phone-frame feel, and interaction smoothness are still not ideal
 
@@ -113,6 +118,7 @@ Supported actions:
 - `douyin-install`
 - `douyin-start`
 - `douyin-diagnose`
+- `audio-diagnose`
 
 Recommended daily flow:
 
@@ -139,10 +145,35 @@ zsh redroid/scripts/redroid_guest4k_107.sh douyin-install
 
 zsh redroid/scripts/redroid_guest4k_107.sh douyin-start
 zsh redroid/scripts/redroid_guest4k_107.sh douyin-diagnose
+zsh redroid/scripts/redroid_guest4k_107.sh audio-diagnose
 ```
 
 If the APK is already staged on `192.168.1.107`, leave `LOCAL_DOUYIN_APK_PATH` unset and the
 default remote path `/tmp/douyin.apk` will be used.
+
+When audio playback feels unstable, use `audio-diagnose` first. It prints the current Android
+playback surface, guest ALSA device visibility, and host PipeWire/QEMU node state in one pass.
+
+Viewer defaults:
+
+```bash
+zsh redroid/scripts/redroid_guest4k_107.sh viewer
+```
+
+This now launches TigerVNC on the remote KDE desktop and cleans up the old Python screencap
+viewer if it is still running.
+
+If you explicitly need the old helper for comparison:
+
+```bash
+VIEWER_MODE=python zsh redroid/scripts/redroid_guest4k_107.sh viewer
+```
+
+Host audio routing defaults:
+
+- QEMU audio is recovered to the current host default sink
+- `HOST_AUDIO_TARGET_SINK` can still override that behavior when needed
+- `HOST_AUDIO_MOVE_TO_TARGET=0` disables sink moves and only restores mute/volume
 
 ## Mainline Technical Shape
 
@@ -156,6 +187,11 @@ The current `Guest4K` shape should be treated as intentional:
 - host PipeWire as the audio sink
 
 This shape won because it is the one that actually converged into a usable runtime.
+
+Current rendering fact:
+
+- the guest is still on `ANGLE + SwiftShader`, so graphics are functional but not yet on the final
+  GPU-backed path
 
 ## Why This Is The Mainline
 
@@ -220,6 +256,12 @@ When deciding what to work on next, assume this priority order:
 4. operator and documentation cleanup for `Guest4K`
 
 Anything outside that order should be treated as secondary unless explicitly requested.
+
+## How It Works
+
+For the current technical baseline and the operator-facing reasoning behind it, start here:
+
+- `docs/guides/guest4k-mainline-how-it-works.md`
 
 ## Status Summary
 
