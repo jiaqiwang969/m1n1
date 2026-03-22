@@ -638,8 +638,8 @@ restore_virgl_srcbuild_rollout() {
   guest_cmd=$(cat <<EOF
 set -euo pipefail
 podman stop -t 10 ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
-podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
-state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+podman start ${CONTAINER} >/dev/null 2>&1 || true
+state=\$(podman container inspect ${CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
 echo "AUTO_RESTORED \${state}"
 test "\${state%%|*}" = "running"
 EOF
@@ -963,12 +963,13 @@ auto_restore() {
   fi
   echo 'ROLLOUT_FAILED'
   podman stop -t 10 ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
-  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
-  state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+  podman start ${CONTAINER} >/dev/null 2>&1 || true
+  state=\$(podman container inspect ${CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
   echo "AUTO_RESTORED \${state}"
 }
 echo 'ROLLOUT_PRECHECK_BEGIN'
 podman container exists ${VIRGL_SRCBUILD_CONTROL_CONTAINER}
+podman container exists ${CONTAINER}
 echo 'ROLLOUT_PRECHECK_END'
 trap auto_restore EXIT
 podman rm -f ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
@@ -977,6 +978,7 @@ podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_ROLL
 echo "ROLLOUT_CLONED \$(podman container inspect ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} --format '{{.ImageName}}|{{range .Mounts}}{{if eq .Destination "/data"}}{{if .Name}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}')"
 echo 'ROLLOUT_STOP_CONTROL'
 handoff_started=1
+podman stop -t 10 ${CONTAINER} >/dev/null 2>&1 || true
 podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
 podman start ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null
 podman exec ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} /system/bin/logcat -c || true
@@ -1048,17 +1050,17 @@ rollback_virgl_srcbuild_rollout() {
 set -euo pipefail
 echo 'ROLLBACK_BEGIN'
 podman stop -t 10 ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
-state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+state=\$(podman container inspect ${CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
 if [ "\${state%%|*}" != "running" ]; then
-  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
-  state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+  podman start ${CONTAINER} >/dev/null 2>&1 || true
+  state=\$(podman container inspect ${CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
 fi
 echo "ROLLBACK_RESTORED \${state}"
 test "\${state%%|*}" = "running"
 EOF
 )
 
-  log "running virgl-srcbuild-rollback back to ${VIRGL_SRCBUILD_CONTROL_CONTAINER}"
+  log "running virgl-srcbuild-rollback back to ${CONTAINER}"
   run_guest_sudo "${guest_cmd}"
 }
 

@@ -385,6 +385,14 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("Failed to create a valid texture", stdout)
         self.assertNotIn("podman run -d --name redroid16kguestprobe-virgl-renderable-srcbuildrollout", stdout)
 
+    def test_virgl_srcbuild_rollout_dry_run_stops_current_standard_mainline_before_handoff(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-rollout")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("podman container exists redroid16kguestprobe", stdout)
+        self.assertIn("podman stop -t 10 redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
+
     def test_virgl_srcbuild_rollout_dry_run_honors_override_env(self) -> None:
         result = self.run_script(
             "--dry-run",
@@ -422,7 +430,7 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertNotIn("androidboot.redroid_gpu_node=/dev/dri/card0", stdout)
         self.assertNotIn("-v redroid16kguestprobe-virgl-renderable-srcbuildrollout-data:/data", stdout)
 
-    def test_virgl_srcbuild_rollback_dry_run_restores_control_without_deleting_rollout_data(self) -> None:
+    def test_virgl_srcbuild_rollback_dry_run_restores_standard_mainline_without_deleting_rollout_data(self) -> None:
         result = self.run_script("--dry-run", "virgl-srcbuild-rollback")
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
@@ -430,7 +438,7 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("virgl-srcbuild-rollback", stdout)
         self.assertIn("ROLLBACK_BEGIN", stdout)
         self.assertIn("redroid16kguestprobe-virgl-renderable-srcbuildrollout", stdout)
-        self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertIn("podman start redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
         self.assertIn("ROLLBACK_RESTORED", stdout)
         self.assertNotIn(
             "podman volume rm -f redroid16kguestprobe-virgl-renderable-srcbuildrollout-data",
