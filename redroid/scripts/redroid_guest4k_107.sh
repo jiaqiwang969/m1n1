@@ -29,9 +29,21 @@ GUEST_SSH_PASSWORD="${GUEST_SSH_PASSWORD:-}"
 ADB_SERIAL="${ADB_SERIAL:-127.0.0.1:5556}"
 VNC_HOST="${VNC_HOST:-127.0.0.1}"
 VNC_PORT="${VNC_PORT:-5901}"
-IMAGE="${IMAGE:-localhost/redroid4k-root:alsa-hal-ranchu-exp2}"
+DEFAULT_IMAGE="${DEFAULT_IMAGE:-localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322}"
+LEGACY_IMAGE="${LEGACY_IMAGE:-localhost/redroid4k-root:alsa-hal-ranchu-exp2}"
+IMAGE="${IMAGE:-${DEFAULT_IMAGE}}"
 CONTAINER="${CONTAINER:-redroid16kguestprobe}"
 VOLUME_NAME="${VOLUME_NAME:-redroid16kguestprobe-data}"
+VIRGL_SRCBUILD_IMAGE="${VIRGL_SRCBUILD_IMAGE:-${DEFAULT_IMAGE}}"
+VIRGL_SRCBUILD_CONTROL_CONTAINER="${VIRGL_SRCBUILD_CONTROL_CONTAINER:-redroid16kguestprobe-virgl-renderable-gralloc4trace}"
+VIRGL_SRCBUILD_PROBE_CONTAINER="${VIRGL_SRCBUILD_PROBE_CONTAINER:-redroid16kguestprobe-virgl-renderable-srcbuildgralloc}"
+VIRGL_SRCBUILD_PROBE_SECONDS="${VIRGL_SRCBUILD_PROBE_SECONDS:-90}"
+VIRGL_SRCBUILD_LONGRUN_CONTAINER="${VIRGL_SRCBUILD_LONGRUN_CONTAINER:-redroid16kguestprobe-virgl-renderable-srcbuildlongrun}"
+VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS="${VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS:-30 60 120 180}"
+VIRGL_SRCBUILD_ROLLOUT_CONTAINER="${VIRGL_SRCBUILD_ROLLOUT_CONTAINER:-redroid16kguestprobe-virgl-renderable-srcbuildrollout}"
+VIRGL_SRCBUILD_ROLLOUT_RETRY_SECONDS="${VIRGL_SRCBUILD_ROLLOUT_RETRY_SECONDS:-30}"
+VIRGL_FINGERPRINT_PROBE_CONTAINER="${VIRGL_FINGERPRINT_PROBE_CONTAINER:-redroid16kguestprobe-virgl-fingerprint-srcbuild}"
+VIRGL_FINGERPRINT_SECONDS="${VIRGL_FINGERPRINT_SECONDS:-90}"
 DOUYIN_PACKAGE="${DOUYIN_PACKAGE:-com.ss.android.ugc.aweme}"
 DOUYIN_ACTIVITY="${DOUYIN_ACTIVITY:-com.ss.android.ugc.aweme/.splash.SplashActivity}"
 LOCAL_DOUYIN_APK_PATH="${LOCAL_DOUYIN_APK_PATH:-}"
@@ -52,18 +64,26 @@ ANDROID_AUDIO_GID="${ANDROID_AUDIO_GID:-1005}"
 REDROID_GPU_MODE="${REDROID_GPU_MODE:-guest}"
 REDROID_GPU_NODE="${REDROID_GPU_NODE:-/dev/dri/card0}"
 REDROID_VNC_BOOT="${REDROID_VNC_BOOT:-1}"
+REDROID_BOOT_HARDWARE_EGL="${REDROID_BOOT_HARDWARE_EGL:-}"
+REDROID_BOOT_HARDWARE_VULKAN="${REDROID_BOOT_HARDWARE_VULKAN:-}"
+REDROID_BOOT_CPU_VULKAN_VERSION="${REDROID_BOOT_CPU_VULKAN_VERSION:-}"
+REDROID_BOOT_OPENGLES_VERSION="${REDROID_BOOT_OPENGLES_VERSION:-}"
+REDROID_BOOT_DEBUG_HWUI_RENDERER="${REDROID_BOOT_DEBUG_HWUI_RENDERER:-}"
+REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND="${REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND:-}"
 DRY_RUN=0
 
 usage() {
   cat <<'EOF'
-Usage: zsh redroid/scripts/redroid_guest4k_107.sh [--dry-run] <vm-start|vm-stop|vm-status|restart|restart-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose>
+Usage: zsh redroid/scripts/redroid_guest4k_107.sh [--dry-run] <vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare>
 
 Actions:
   vm-start   Start the 4 KB Ubuntu microVM on the remote Asahi host
   vm-stop    Stop the 4 KB Ubuntu microVM on the remote Asahi host
   vm-status  Show the current microVM state on the remote Asahi host
-  restart    Restart the known-good Redroid container inside the 4 KB guest
-  restart-preserve-data  Recreate the guest Redroid container without deleting its /data volume
+  restart    Restart the default virgl-srcbuild Redroid container inside the 4 KB guest
+  restart-preserve-data  Recreate the default virgl-srcbuild guest Redroid container without deleting its /data volume
+  restart-legacy  Restart the legacy alsa-hal-ranchu-exp2 Redroid container inside the 4 KB guest
+  restart-legacy-preserve-data  Recreate the legacy guest Redroid container without deleting its /data volume
   status     Show VM state, guest page size, and guest container status
   verify     Verify guest SSH plus host-visible ADB and VNC endpoints
   viewer     Launch the Guest4K viewer on the remote KDE desktop (default: TigerVNC, fallback: VIEWER_MODE=python)
@@ -71,6 +91,11 @@ Actions:
   douyin-start     Force-stop and launch Douyin on the Guest4K runtime
   douyin-diagnose  Print Guest4K Douyin app, audio, and filtered log surfaces
   audio-diagnose   Print Guest4K guest ALSA, Android audio, and host PipeWire surfaces
+  virgl-srcbuild-probe  Run the bounded source-consistent virgl clone probe and restore the control container
+  virgl-srcbuild-longrun  Run the source-consistent virgl long-run probe with periodic checkpoints and restore the control container
+  virgl-srcbuild-rollout  Roll out the source-consistent virgl image onto the standard path with explicit rollback support
+  virgl-srcbuild-rollback  Restore the preserved virgl control container after a source-consistent rollout attempt
+  virgl-fingerprint-compare  Compare failing-vs-green virgl runtime fingerprints and restore the control container
 EOF
 }
 
@@ -334,7 +359,11 @@ connect_adb() {
 
   cmd=$(cat <<EOF
 adb disconnect ${ADB_SERIAL} >/dev/null 2>&1 || true
-adb connect ${ADB_SERIAL}
+deadline=\$((\$(date +%s) + 30))
+while [ \$(date +%s) -lt "\$deadline" ]; do
+  adb connect ${ADB_SERIAL} >/dev/null 2>&1 && break
+  sleep 2
+done
 adb devices
 EOF
 )
@@ -551,13 +580,139 @@ chmod 660 /dev/snd/* >/dev/null 2>&1 || true
 EOF
 }
 
+android_boot_graphics_args() {
+  local args=()
+
+  if [[ -n "${REDROID_BOOT_HARDWARE_EGL}" ]]; then
+    args+=("androidboot.hardwareegl=${REDROID_BOOT_HARDWARE_EGL}")
+  fi
+
+  if [[ -n "${REDROID_BOOT_HARDWARE_VULKAN}" ]]; then
+    args+=("androidboot.hardware.vulkan=${REDROID_BOOT_HARDWARE_VULKAN}")
+  fi
+
+  if [[ -n "${REDROID_BOOT_CPU_VULKAN_VERSION}" ]]; then
+    args+=("androidboot.cpuvulkan.version=${REDROID_BOOT_CPU_VULKAN_VERSION}")
+  fi
+
+  if [[ -n "${REDROID_BOOT_OPENGLES_VERSION}" ]]; then
+    args+=("androidboot.opengles.version=${REDROID_BOOT_OPENGLES_VERSION}")
+  fi
+
+  if [[ -n "${REDROID_BOOT_DEBUG_HWUI_RENDERER}" ]]; then
+    args+=("androidboot.debug.hwui.renderer=${REDROID_BOOT_DEBUG_HWUI_RENDERER}")
+  fi
+
+  if [[ -n "${REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND}" ]]; then
+    args+=("androidboot.debug.renderengine.backend=${REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND}")
+  fi
+
+  printf '%s' "${(j: :)args}"
+}
+
+default_android_boot_args() {
+  local args="qemu=1 androidboot.hardware=redroid androidboot.use_redroid_vnc=${REDROID_VNC_BOOT} androidboot.redroid_gpu_mode=${REDROID_GPU_MODE} androidboot.redroid_gpu_node=${REDROID_GPU_NODE}"
+  local graphics_args
+
+  graphics_args="$(android_boot_graphics_args)"
+  if [[ -n "${graphics_args}" ]]; then
+    args+=" ${graphics_args}"
+  fi
+
+  printf '%s' "${args}"
+}
+
+restore_virgl_srcbuild_rollout() {
+  local guest_cmd
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+podman stop -t 10 ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
+podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+echo "AUTO_RESTORED \${state}"
+test "\${state%%|*}" = "running"
+EOF
+)
+
+  run_guest_sudo "${guest_cmd}"
+}
+
+rollout_health_capture_cmd() {
+  local begin_marker="$1"
+  local end_marker="$2"
+  local sleep_seconds="${3:-0}"
+
+  cat <<EOF
+set -euo pipefail
+if [ "${sleep_seconds}" -gt 0 ]; then
+  sleep ${sleep_seconds}
+fi
+echo '${begin_marker}'
+podman exec ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} /system/bin/sh -lc '
+sf_pid=\$(/system/bin/pidof surfaceflinger 2>/dev/null || true)
+printf "ro.hardware.gralloc="
+/system/bin/getprop ro.hardware.gralloc
+printf "sys.boot_completed="
+/system/bin/getprop sys.boot_completed
+printf "init.svc.surfaceflinger="
+/system/bin/getprop init.svc.surfaceflinger
+printf "surfaceflinger.pid=%s\n" "\${sf_pid}"
+' || true
+podman exec ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true' || true
+echo '${end_marker}'
+EOF
+}
+
+rollout_health_has_required_properties() {
+  local output="$1"
+
+  [[ "${output}" == *"ro.hardware.gralloc=minigbm"* ]] &&
+    [[ "${output}" == *"sys.boot_completed=1"* ]] &&
+    [[ "${output}" == *"init.svc.surfaceflinger=running"* ]] &&
+    printf '%s\n' "${output}" | grep -Eq '^surfaceflinger\.pid=.+'
+}
+
+rollout_health_has_positive_marker() {
+  local output="$1"
+
+  [[ "${output}" == *"Using gralloc0 CrOS API"* ]]
+}
+
+rollout_health_has_negative_markers() {
+  local output="$1"
+
+  [[ "${output}" == *"Using fallback gralloc implementation"* ]] || \
+    [[ "${output}" == *"failed to create DRI image from FD"* ]] || \
+    [[ "${output}" == *"eglCreateImageKHR failed"* ]] || \
+    [[ "${output}" == *"Failed to create a valid texture"* ]]
+}
+
+rollout_health_gate_passes() {
+  local output="$1"
+
+  rollout_health_has_required_properties "${output}" &&
+    rollout_health_has_positive_marker "${output}" &&
+    ! rollout_health_has_negative_markers "${output}"
+}
+
+rollout_health_needs_retry() {
+  local output="$1"
+
+  rollout_health_has_required_properties "${output}" &&
+    ! rollout_health_has_positive_marker "${output}" &&
+    ! rollout_health_has_negative_markers "${output}"
+}
+
 restart_redroid() {
-  local preserve_data="${1:-0}"
+  local image="${1:-${IMAGE}}"
+  local preserve_data="${2:-0}"
   local guest_cmd
   local graphics_prep_cmd
   local graphics_mounts
   local audio_prep_cmd
   local volume_reset_cmd="podman volume rm -f ${VOLUME_NAME} >/dev/null 2>&1 || true"
+  local android_boot_args
 
   require_supported_graphics_profile
   vm_start
@@ -565,6 +720,7 @@ restart_redroid() {
   graphics_prep_cmd="$(graphics_prepare_cmd)"
   graphics_mounts="$(graphics_mount_args)"
   audio_prep_cmd="$(audio_prepare_cmd)"
+  android_boot_args="$(default_android_boot_args)"
   if [[ "${preserve_data}" == "1" ]]; then
     volume_reset_cmd=":"
   fi
@@ -577,6 +733,9 @@ for legacy_container in ${LEGACY_GUEST_CONTAINERS}; do
   podman volume rm -f "\${legacy_container}-data" >/dev/null 2>&1 || true
 done
 podman rm -f ${CONTAINER} >/dev/null 2>&1 || true
+for standard_port_container in ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} ${VIRGL_SRCBUILD_CONTROL_CONTAINER}; do
+  podman stop -t 10 "\${standard_port_container}" >/dev/null 2>&1 || true
+done
 ${volume_reset_cmd}
 mkdir -p /dev/binderfs
 mountpoint -q /dev/binderfs || mount -t binder binder /dev/binderfs
@@ -590,14 +749,14 @@ ${graphics_mounts}
   -v /dev/binderfs/binder:/dev/binder \\
   -v /dev/binderfs/hwbinder:/dev/hwbinder \\
   -v /dev/binderfs/vndbinder:/dev/vndbinder \\
-  --entrypoint /init ${IMAGE} \\
-  qemu=1 androidboot.hardware=redroid androidboot.use_redroid_vnc=${REDROID_VNC_BOOT} androidboot.redroid_gpu_mode=${REDROID_GPU_MODE} androidboot.redroid_gpu_node=${REDROID_GPU_NODE}
+  --entrypoint /init ${image} \\
+  ${android_boot_args}
 podman ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
 EOF
 )
 
   log "graphics profile: ${GRAPHICS_PROFILE}"
-  log "restarting guest Redroid container ${CONTAINER}"
+  log "restarting guest Redroid container ${CONTAINER} with image ${image}"
   run_guest_sudo "${guest_cmd}"
   connect_adb
   wait_for_boot
@@ -646,6 +805,331 @@ EOF
   host_vnc_cmd="$(vnc_banner_probe_cmd)"
   log "verifying VNC banner on ${VNC_HOST}:${VNC_PORT}"
   run_remote "bash -lc ${(qqq)host_vnc_cmd}"
+}
+
+probe_virgl_srcbuild() {
+  local guest_cmd
+
+  wait_for_guest_ssh
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+restore() {
+  set +e
+  podman stop -t 10 ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null 2>&1 || true
+  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+}
+trap restore EXIT
+podman rm -f ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null 2>&1 || true
+podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_PROBE_CONTAINER} ${VIRGL_SRCBUILD_IMAGE} >/dev/null
+echo "CLONE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.Name}}|{{.ImageName}}')"
+podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
+echo "CONTROL stopped"
+podman start ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null
+echo "PROBE started"
+sleep 10
+echo "PROBE_STATE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
+podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/logcat -c || true
+sleep ${VIRGL_SRCBUILD_PROBE_SECONDS}
+echo 'PROPS_BEGIN'
+podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/sh -lc '/system/bin/getprop ro.hardware.gralloc; /system/bin/getprop sys.boot_completed; /system/bin/getprop init.svc.surfaceflinger' || true
+echo 'PROPS_END'
+echo 'FILES_BEGIN'
+podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/sh -lc 'ls -l /vendor/lib64/hw/gralloc.cros.so /vendor/lib64/hw/gralloc.minigbm.so 2>/dev/null || true' || true
+echo 'FILES_END'
+echo 'LOGS_BEGIN'
+podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true' || true
+echo 'LOGS_END'
+echo "FINAL_STATE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
+trap - EXIT
+podman stop -t 10 ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null 2>&1 || true
+podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
+echo "RESTORED \$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
+EOF
+)
+
+  log "running virgl-srcbuild-probe from ${VIRGL_SRCBUILD_CONTROL_CONTAINER} onto ${VIRGL_SRCBUILD_IMAGE}"
+  run_guest_sudo "${guest_cmd}"
+}
+
+probe_virgl_srcbuild_longrun() {
+  local guest_cmd
+  local checkpoint_cmds=""
+  local checkpoint=0
+  local previous_checkpoint=0
+  local delta=0
+
+  wait_for_guest_ssh
+
+  for checkpoint in ${(z)VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS}; do
+    if (( checkpoint < previous_checkpoint )); then
+      printf 'VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS must be ascending: %s\n' "${VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS}" >&2
+      return 1
+    fi
+    delta=$((checkpoint - previous_checkpoint))
+    checkpoint_cmds+=$(cat <<EOF
+sleep ${delta}
+echo 'CHECKPOINT_T${checkpoint}_BEGIN'
+podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/sh -lc '
+sf_pid=\$(/system/bin/pidof surfaceflinger 2>/dev/null || true)
+printf "ro.hardware.gralloc="
+/system/bin/getprop ro.hardware.gralloc
+printf "sys.boot_completed="
+/system/bin/getprop sys.boot_completed
+printf "init.svc.surfaceflinger="
+/system/bin/getprop init.svc.surfaceflinger
+printf "surfaceflinger.pid=%s\n" "\${sf_pid}"
+' || true
+podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true' || true
+echo 'CHECKPOINT_T${checkpoint}_END'
+EOF
+)
+    checkpoint_cmds+=$'\n'
+    previous_checkpoint=${checkpoint}
+  done
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+restore() {
+  set +e
+  podman stop -t 10 ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null 2>&1 || true
+  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+}
+trap restore EXIT
+podman rm -f ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null 2>&1 || true
+podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} ${VIRGL_SRCBUILD_IMAGE} >/dev/null
+echo "CLONE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.Name}}|{{.ImageName}}')"
+podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
+echo "CONTROL stopped"
+podman start ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null
+echo "PROBE started"
+sleep 10
+echo "PROBE_STATE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
+podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/logcat -c || true
+${checkpoint_cmds}
+echo 'FINAL_FILES_BEGIN'
+podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/sh -lc '
+for path in /vendor/lib64/hw/gralloc.cros.so /vendor/lib64/hw/gralloc.minigbm.so; do
+  echo "FILE \$path"
+  if [ -e "\$path" ]; then
+    ls -l "\$path"
+  else
+    echo "MISSING \$path"
+  fi
+done
+' || true
+echo 'FINAL_FILES_END'
+echo "FINAL_STATE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
+trap - EXIT
+podman stop -t 10 ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null 2>&1 || true
+podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
+echo "RESTORED \$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
+EOF
+)
+
+  log "running virgl-srcbuild-longrun from ${VIRGL_SRCBUILD_CONTROL_CONTAINER} onto ${VIRGL_SRCBUILD_IMAGE}"
+  run_guest_sudo "${guest_cmd}"
+}
+
+rollout_virgl_srcbuild() {
+  local guest_cmd
+  local health_cmd
+  local health_output
+  local health_retry_cmd
+  local health_retry_output=""
+  local combined_health_output
+
+  require_supported_graphics_profile
+  vm_start
+  wait_for_guest_ssh
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+handoff_started=0
+auto_restore() {
+  set +e
+  if [ "\${handoff_started}" != "1" ]; then
+    return
+  fi
+  echo 'ROLLOUT_FAILED'
+  podman stop -t 10 ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
+  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+  state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+  echo "AUTO_RESTORED \${state}"
+}
+echo 'ROLLOUT_PRECHECK_BEGIN'
+podman container exists ${VIRGL_SRCBUILD_CONTROL_CONTAINER}
+echo 'ROLLOUT_PRECHECK_END'
+trap auto_restore EXIT
+podman rm -f ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
+echo 'ROLLOUT_CLONE_BEGIN'
+podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} ${VIRGL_SRCBUILD_IMAGE} >/dev/null
+echo "ROLLOUT_CLONED \$(podman container inspect ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} --format '{{.ImageName}}|{{range .Mounts}}{{if eq .Destination "/data"}}{{if .Name}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}')"
+echo 'ROLLOUT_STOP_CONTROL'
+handoff_started=1
+podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+podman start ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null
+podman exec ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} /system/bin/logcat -c || true
+echo "ROLLOUT_STARTED \$(podman container inspect ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
+trap - EXIT
+EOF
+)
+
+  log "running virgl-srcbuild-rollout from ${VIRGL_SRCBUILD_CONTROL_CONTAINER} onto ${VIRGL_SRCBUILD_IMAGE}"
+  if ! run_guest_sudo "${guest_cmd}"; then
+    return 1
+  fi
+
+  if ! connect_adb || ! wait_for_boot || ! post_boot_prepare; then
+    log "rollout boot preparation failed; restoring preserved control container"
+    printf 'ROLLOUT_FAILED\n'
+    restore_virgl_srcbuild_rollout
+    return 1
+  fi
+
+  health_cmd="$(rollout_health_capture_cmd ROLLOUT_HEALTH_BEGIN ROLLOUT_HEALTH_END)"
+  health_retry_cmd="$(rollout_health_capture_cmd ROLLOUT_HEALTH_RETRY_BEGIN ROLLOUT_HEALTH_RETRY_END "${VIRGL_SRCBUILD_ROLLOUT_RETRY_SECONDS}")"
+
+  if ! health_output="$(run_guest_sudo_capture "${health_cmd}")"; then
+    printf '%s\n' "${health_output}"
+    log "rollout health capture failed; restoring preserved control container"
+    printf 'ROLLOUT_FAILED\n'
+    restore_virgl_srcbuild_rollout
+    return 1
+  fi
+  printf '%s\n' "${health_output}"
+
+  if (( DRY_RUN )); then
+    health_retry_output="$(run_guest_sudo_capture "${health_retry_cmd}")"
+    printf '%s\n' "${health_retry_output}"
+    printf 'ROLLOUT_ACTIVE dry-run\n'
+    return 0
+  fi
+
+  combined_health_output="${health_output}"
+  if rollout_health_needs_retry "${health_output}"; then
+    if ! health_retry_output="$(run_guest_sudo_capture "${health_retry_cmd}")"; then
+      printf '%s\n' "${health_retry_output}"
+      log "rollout health retry capture failed; restoring preserved control container"
+      printf 'ROLLOUT_FAILED\n'
+      restore_virgl_srcbuild_rollout
+      return 1
+    fi
+    printf '%s\n' "${health_retry_output}"
+    combined_health_output+=$'\n'"${health_retry_output}"
+  fi
+
+  if ! rollout_health_gate_passes "${combined_health_output}"; then
+    log "rollout health gate failed; restoring preserved control container"
+    printf 'ROLLOUT_FAILED\n'
+    restore_virgl_srcbuild_rollout
+    return 1
+  fi
+
+  printf 'ROLLOUT_ACTIVE %s\n' "${VIRGL_SRCBUILD_ROLLOUT_CONTAINER}"
+}
+
+rollback_virgl_srcbuild_rollout() {
+  local guest_cmd
+
+  wait_for_guest_ssh
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+echo 'ROLLBACK_BEGIN'
+podman stop -t 10 ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null 2>&1 || true
+state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+if [ "\${state%%|*}" != "running" ]; then
+  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+  state=\$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || true)
+fi
+echo "ROLLBACK_RESTORED \${state}"
+test "\${state%%|*}" = "running"
+EOF
+)
+
+  log "running virgl-srcbuild-rollback back to ${VIRGL_SRCBUILD_CONTROL_CONTAINER}"
+  run_guest_sudo "${guest_cmd}"
+}
+
+compare_virgl_fingerprints() {
+  local guest_cmd
+
+  wait_for_guest_ssh
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+fingerprint_container() {
+  state_label="\$1"
+  props_begin="\$2"
+  props_end="\$3"
+  libs_begin="\$4"
+  libs_end="\$5"
+  logs_begin="\$6"
+  logs_end="\$7"
+  container="\$8"
+  echo "\${state_label} \$(podman container inspect "\${container}" --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}|{{.ImageName}}')"
+  echo "\${props_begin}"
+  podman exec "\${container}" /system/bin/sh -lc '
+for prop in ro.hardware.egl ro.hardware.vulkan ro.hardware.gralloc sys.boot_completed init.svc.surfaceflinger; do
+  printf "%s=" "\$prop"
+  /system/bin/getprop "\$prop"
+done
+' || true
+  echo "\${props_end}"
+  echo "\${libs_begin}"
+  podman exec "\${container}" /system/bin/sh -lc '
+for path in \
+  /system/lib64/libEGL.so \
+  /vendor/lib64/egl/libEGL_mesa.so \
+  /vendor/lib64/egl/libGLESv2_mesa.so \
+  /vendor/lib64/dri/libgallium_dri.so \
+  /vendor/lib64/libgbm.so.1 \
+  /vendor/lib64/hw/gralloc.cros.so \
+  /vendor/lib64/hw/gralloc.minigbm.so \
+  /vendor/lib64/hw/mapper.minigbm.so
+do
+  echo "LIB \$path"
+  if [ -e "\$path" ]; then
+    ls -l "\$path"
+    /system/bin/toybox sha256sum "\$path" || true
+  else
+    echo "MISSING \$path"
+  fi
+done
+' || true
+  echo "\${libs_end}"
+  echo "\${logs_begin}"
+  podman exec "\${container}" /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true' || true
+  echo "\${logs_end}"
+}
+restore() {
+  set +e
+  podman stop -t 10 ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
+  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+}
+trap restore EXIT
+podman rm -f ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
+fingerprint_container CONTROL_STATE CONTROL_PROPS_BEGIN CONTROL_PROPS_END CONTROL_LIBS_BEGIN CONTROL_LIBS_END CONTROL_LOGS_BEGIN CONTROL_LOGS_END ${VIRGL_SRCBUILD_CONTROL_CONTAINER}
+podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_FINGERPRINT_PROBE_CONTAINER} ${VIRGL_SRCBUILD_IMAGE} >/dev/null
+echo "CLONE \$(podman container inspect ${VIRGL_FINGERPRINT_PROBE_CONTAINER} --format '{{.Name}}|{{.ImageName}}')"
+podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
+echo "CONTROL stopped"
+podman start ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null
+echo "PROBE started"
+sleep 10
+podman exec ${VIRGL_FINGERPRINT_PROBE_CONTAINER} /system/bin/logcat -c || true
+sleep ${VIRGL_FINGERPRINT_SECONDS}
+fingerprint_container PROBE_STATE PROBE_PROPS_BEGIN PROBE_PROPS_END PROBE_LIBS_BEGIN PROBE_LIBS_END PROBE_LOGS_BEGIN PROBE_LOGS_END ${VIRGL_FINGERPRINT_PROBE_CONTAINER}
+trap - EXIT
+podman stop -t 10 ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
+podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
+echo "RESTORED \$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
+EOF
+)
+
+  log "running virgl-fingerprint-compare from ${VIRGL_SRCBUILD_CONTROL_CONTAINER} onto ${VIRGL_SRCBUILD_IMAGE}"
+  run_guest_sudo "${guest_cmd}"
 }
 
 install_douyin() {
@@ -807,7 +1291,7 @@ main() {
         usage
         exit 0
         ;;
-      vm-start|vm-stop|vm-status|restart|restart-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose)
+      vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare)
         action="$1"
         shift
         break
@@ -836,10 +1320,16 @@ main() {
       vm_status
       ;;
     restart)
-      restart_redroid
+      restart_redroid "${IMAGE}" 0
       ;;
     restart-preserve-data)
-      restart_redroid 1
+      restart_redroid "${IMAGE}" 1
+      ;;
+    restart-legacy)
+      restart_redroid "${LEGACY_IMAGE}" 0
+      ;;
+    restart-legacy-preserve-data)
+      restart_redroid "${LEGACY_IMAGE}" 1
       ;;
     status)
       show_status
@@ -861,6 +1351,21 @@ main() {
       ;;
     audio-diagnose)
       diagnose_audio
+      ;;
+    virgl-srcbuild-probe)
+      probe_virgl_srcbuild
+      ;;
+    virgl-srcbuild-longrun)
+      probe_virgl_srcbuild_longrun
+      ;;
+    virgl-srcbuild-rollout)
+      rollout_virgl_srcbuild
+      ;;
+    virgl-srcbuild-rollback)
+      rollback_virgl_srcbuild_rollout
+      ;;
+    virgl-fingerprint-compare)
+      compare_virgl_fingerprints
       ;;
   esac
 }

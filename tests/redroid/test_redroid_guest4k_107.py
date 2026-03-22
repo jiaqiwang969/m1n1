@@ -36,6 +36,20 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("./launch.sh", stdout)
         self.assertIn("192.168.1.107", stdout)
 
+    def test_help_lists_explicit_virgl_and_legacy_operator_actions_in_usage_header(self) -> None:
+        result = self.run_script("--help")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        usage_header = stdout.splitlines()[0]
+        self.assertIn("restart-legacy", usage_header)
+        self.assertIn("restart-legacy-preserve-data", usage_header)
+        self.assertIn("virgl-srcbuild-probe", usage_header)
+        self.assertIn("virgl-srcbuild-longrun", usage_header)
+        self.assertIn("virgl-srcbuild-rollout", usage_header)
+        self.assertIn("virgl-srcbuild-rollback", usage_header)
+        self.assertIn("virgl-fingerprint-compare", usage_header)
+
     def test_vm_script_overrides_are_used_in_dry_run(self) -> None:
         env = {
             "VM_LAUNCH_SCRIPT": "/tmp/guest4k/launch-headless-vkms.sh",
@@ -90,7 +104,8 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
         self.assertIn("graphics profile: guest-all-dri", stdout)
-        self.assertIn("localhost/redroid4k-root:alsa-hal-ranchu-exp2", stdout)
+        self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
+        self.assertNotIn("localhost/redroid4k-root:alsa-hal-ranchu-exp2", stdout)
         self.assertNotIn("localhost/redroid16k-root:latest", stdout)
         self.assertIn("/home/wjq/vm4k/ubuntu24k/guest_key", stdout)
         self.assertIn("127.0.0.1:2222", stdout)
@@ -103,6 +118,20 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("redroid16kbridgeprobe", stdout)
         self.assertIn("-v /dev/dri:/dev/dri", stdout)
         self.assertNotIn("--network host", stdout)
+
+    def test_restart_dry_run_stops_preserved_virgl_port_owners_before_rebinding_standard_ports(self) -> None:
+        result = self.run_script("--dry-run", "restart")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            "for standard_port_container in redroid16kguestprobe-virgl-renderable-srcbuildrollout redroid16kguestprobe-virgl-renderable-gralloc4trace; do",
+            stdout,
+        )
+        self.assertIn(
+            'podman stop -t 10 "${standard_port_container}" >/dev/null 2>&1 || true',
+            stdout,
+        )
 
     def test_restart_dry_run_repairs_guest_card0_permissions_for_guest_all_dri(self) -> None:
         result = self.run_script("--dry-run", "restart")
@@ -152,6 +181,39 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("androidboot.redroid_gpu_node=/dev/dri/renderD128", stdout)
         self.assertNotRegex(stdout, r"(?<!androidboot\.)redroid_gpu_mode=host")
 
+    def test_restart_dry_run_supports_graphics_boot_prop_overrides(self) -> None:
+        result = self.run_script(
+            "--dry-run",
+            "restart",
+            extra_env={
+                "REDROID_BOOT_HARDWARE_EGL": "mesa",
+                "REDROID_BOOT_HARDWARE_VULKAN": "virtio",
+                "REDROID_BOOT_CPU_VULKAN_VERSION": "0",
+                "REDROID_BOOT_OPENGLES_VERSION": "196608",
+                "REDROID_BOOT_DEBUG_HWUI_RENDERER": "skiagl",
+                "REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND": "skiaglthreaded",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("androidboot.hardwareegl=mesa", stdout)
+        self.assertIn("androidboot.hardware.vulkan=virtio", stdout)
+        self.assertIn("androidboot.cpuvulkan.version=0", stdout)
+        self.assertIn("androidboot.opengles.version=196608", stdout)
+        self.assertIn("androidboot.debug.hwui.renderer=skiagl", stdout)
+        self.assertIn("androidboot.debug.renderengine.backend=skiaglthreaded", stdout)
+
+    def test_restart_dry_run_does_not_default_to_experimental_graphics_boot_props(self) -> None:
+        result = self.run_script("--dry-run", "restart")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertNotIn("androidboot.hardwareegl=mesa", stdout)
+        self.assertNotIn("androidboot.hardware.vulkan=virtio", stdout)
+        self.assertNotIn("androidboot.cpuvulkan.version=0", stdout)
+        self.assertNotIn("androidboot.opengles.version=196608", stdout)
+
     def test_restart_dry_run_enables_redroid_vnc_boot_flag(self) -> None:
         result = self.run_script("--dry-run", "restart")
 
@@ -170,6 +232,15 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("if not banner.startswith(b", stdout)
         self.assertIn("RFB", stdout)
         self.assertNotIn("init.svc.vendor.vncserver", stdout)
+
+    def test_restart_dry_run_uses_bounded_quiet_adb_connect_poll_before_boot_wait(self) -> None:
+        result = self.run_script("--dry-run", "restart")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(r"deadline=\$((\$(date +%s) + 30))", stdout)
+        self.assertIn("adb connect 127.0.0.1:5556 >/dev/null 2>&1 && break", stdout)
+        self.assertNotIn("adb connect 127.0.0.1:5556\nadb devices", stdout)
 
     def test_restart_dry_run_supports_guest_vkms_graphics_profile(self) -> None:
         result = self.run_script(
@@ -193,6 +264,207 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("-v /dev/null:/dev/dri/renderD129", stdout)
         self.assertNotIn("-v /dev/dri:/dev/dri", stdout)
         self.assertNotIn("--network host", stdout)
+
+    def test_virgl_srcbuild_probe_dry_run_shows_clone_probe_restore_shape(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-probe")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("virgl-srcbuild-probe", stdout)
+        self.assertIn("podman container clone", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-srcbuildgralloc", stdout)
+        self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
+        self.assertIn("/system/bin/logcat -c", stdout)
+        self.assertIn("sleep 90", stdout)
+        self.assertIn("{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}", stdout)
+        self.assertNotIn('%q', stdout)
+        self.assertIn("Using gralloc0 CrOS API", stdout)
+        self.assertIn("Failed to create a valid texture", stdout)
+        self.assertIn("podman start redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+
+    def test_virgl_srcbuild_probe_dry_run_honors_override_env(self) -> None:
+        result = self.run_script(
+            "--dry-run",
+            "virgl-srcbuild-probe",
+            extra_env={
+                "VIRGL_SRCBUILD_IMAGE": "localhost/redroid4k-root:test-override",
+                "VIRGL_SRCBUILD_CONTROL_CONTAINER": "control-override",
+                "VIRGL_SRCBUILD_PROBE_CONTAINER": "probe-override",
+                "VIRGL_SRCBUILD_PROBE_SECONDS": "30",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("localhost/redroid4k-root:test-override", stdout)
+        self.assertIn("control-override", stdout)
+        self.assertIn("probe-override", stdout)
+        self.assertIn("sleep 30", stdout)
+
+    def test_virgl_srcbuild_longrun_dry_run_shows_checkpoint_probe_shape(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-longrun")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("virgl-srcbuild-longrun", stdout)
+        self.assertIn("podman container clone", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-srcbuildlongrun", stdout)
+        self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
+        self.assertIn("CHECKPOINT_T30_BEGIN", stdout)
+        self.assertIn("CHECKPOINT_T60_BEGIN", stdout)
+        self.assertIn("CHECKPOINT_T120_BEGIN", stdout)
+        self.assertIn("CHECKPOINT_T180_BEGIN", stdout)
+        self.assertIn("echo 'CHECKPOINT_T30_END'\nsleep 30", stdout)
+        self.assertIn("sleep 30", stdout)
+        self.assertIn("sleep 60", stdout)
+        self.assertIn("pidof surfaceflinger", stdout)
+        self.assertIn("FINAL_FILES_BEGIN", stdout)
+        self.assertIn("/vendor/lib64/hw/gralloc.cros.so", stdout)
+        self.assertIn("/vendor/lib64/hw/gralloc.minigbm.so", stdout)
+        self.assertIn("RESTORED", stdout)
+
+    def test_virgl_srcbuild_longrun_dry_run_honors_override_env(self) -> None:
+        result = self.run_script(
+            "--dry-run",
+            "virgl-srcbuild-longrun",
+            extra_env={
+                "VIRGL_SRCBUILD_IMAGE": "localhost/redroid4k-root:test-longrun",
+                "VIRGL_SRCBUILD_CONTROL_CONTAINER": "control-longrun",
+                "VIRGL_SRCBUILD_LONGRUN_CONTAINER": "probe-longrun",
+                "VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS": "15 45 90",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("localhost/redroid4k-root:test-longrun", stdout)
+        self.assertIn("control-longrun", stdout)
+        self.assertIn("probe-longrun", stdout)
+        self.assertIn("CHECKPOINT_T15_BEGIN", stdout)
+        self.assertIn("CHECKPOINT_T45_BEGIN", stdout)
+        self.assertIn("CHECKPOINT_T90_BEGIN", stdout)
+
+    def test_virgl_srcbuild_rollout_dry_run_shows_clone_handoff_shape(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-rollout")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("virgl-srcbuild-rollout", stdout)
+        self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-srcbuildrollout", stdout)
+        self.assertIn("ROLLOUT_PRECHECK_BEGIN", stdout)
+        self.assertIn("ROLLOUT_CLONE_BEGIN", stdout)
+        self.assertIn("ROLLOUT_CLONED", stdout)
+        self.assertIn("ROLLOUT_STOP_CONTROL", stdout)
+        self.assertIn("ROLLOUT_STARTED", stdout)
+        self.assertIn("ROLLOUT_HEALTH_BEGIN", stdout)
+        self.assertIn("ROLLOUT_HEALTH_END", stdout)
+        self.assertIn("ROLLOUT_ACTIVE", stdout)
+        self.assertIn("ROLLOUT_FAILED", stdout)
+        self.assertIn("AUTO_RESTORED", stdout)
+        self.assertIn(
+            "podman container clone redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-renderable-srcbuildrollout localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322",
+            stdout,
+        )
+        self.assertIn("adb connect 127.0.0.1:5556", stdout)
+        self.assertIn("Using gralloc0 CrOS API", stdout)
+        self.assertIn("Failed to create a valid texture", stdout)
+        self.assertNotIn("podman run -d --name redroid16kguestprobe-virgl-renderable-srcbuildrollout", stdout)
+
+    def test_virgl_srcbuild_rollout_dry_run_honors_override_env(self) -> None:
+        result = self.run_script(
+            "--dry-run",
+            "virgl-srcbuild-rollout",
+            extra_env={
+                "VIRGL_SRCBUILD_IMAGE": "localhost/redroid4k-root:test-rollout",
+                "VIRGL_SRCBUILD_CONTROL_CONTAINER": "control-rollout",
+                "VIRGL_SRCBUILD_ROLLOUT_CONTAINER": "rollout-container",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("localhost/redroid4k-root:test-rollout", stdout)
+        self.assertIn("control-rollout", stdout)
+        self.assertIn("rollout-container", stdout)
+
+    def test_virgl_srcbuild_rollout_dry_run_retries_health_window_before_failing(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-rollout")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("ROLLOUT_HEALTH_RETRY_BEGIN", stdout)
+        self.assertIn("ROLLOUT_HEALTH_RETRY_END", stdout)
+        self.assertIn("sleep 30", stdout)
+
+    def test_virgl_srcbuild_rollout_dry_run_reuses_control_runtime_shape_instead_of_rebuilding_it(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-rollout")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("ROLLOUT_CLONE_BEGIN", stdout)
+        self.assertIn("podman container clone", stdout)
+        self.assertNotIn("androidboot.redroid_gpu_mode=guest", stdout)
+        self.assertNotIn("androidboot.redroid_gpu_node=/dev/dri/card0", stdout)
+        self.assertNotIn("-v redroid16kguestprobe-virgl-renderable-srcbuildrollout-data:/data", stdout)
+
+    def test_virgl_srcbuild_rollback_dry_run_restores_control_without_deleting_rollout_data(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-rollback")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("virgl-srcbuild-rollback", stdout)
+        self.assertIn("ROLLBACK_BEGIN", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-srcbuildrollout", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertIn("ROLLBACK_RESTORED", stdout)
+        self.assertNotIn(
+            "podman volume rm -f redroid16kguestprobe-virgl-renderable-srcbuildrollout-data",
+            stdout,
+        )
+
+    def test_virgl_fingerprint_compare_dry_run_shows_control_and_probe_fingerprints(self) -> None:
+        result = self.run_script("--dry-run", "virgl-fingerprint-compare")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("virgl-fingerprint-compare", stdout)
+        self.assertIn("CONTROL_STATE", stdout)
+        self.assertIn("CONTROL_LIBS_BEGIN", stdout)
+        self.assertIn("PROBE_STATE", stdout)
+        self.assertIn("PROBE_LIBS_BEGIN", stdout)
+        self.assertIn("podman container clone", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-fingerprint-srcbuild", stdout)
+        self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
+        self.assertIn("/system/bin/toybox sha256sum", stdout)
+        self.assertIn("/system/lib64/libEGL.so", stdout)
+        self.assertIn("/vendor/lib64/egl/libEGL_mesa.so", stdout)
+        self.assertIn("/vendor/lib64/hw/gralloc.cros.so", stdout)
+        self.assertIn("sleep 90", stdout)
+        self.assertIn("podman start redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+
+    def test_virgl_fingerprint_compare_dry_run_honors_override_env(self) -> None:
+        result = self.run_script(
+            "--dry-run",
+            "virgl-fingerprint-compare",
+            extra_env={
+                "VIRGL_SRCBUILD_IMAGE": "localhost/redroid4k-root:test-compare",
+                "VIRGL_SRCBUILD_CONTROL_CONTAINER": "control-compare",
+                "VIRGL_FINGERPRINT_PROBE_CONTAINER": "probe-compare",
+                "VIRGL_FINGERPRINT_SECONDS": "30",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("localhost/redroid4k-root:test-compare", stdout)
+        self.assertIn("control-compare", stdout)
+        self.assertIn("probe-compare", stdout)
+        self.assertIn("sleep 30", stdout)
 
     def test_verify_dry_run_shows_host_visible_endpoints(self) -> None:
         result = self.run_script("--dry-run", "verify")
@@ -357,8 +629,28 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
+        self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
         self.assertIn("setenforce 0 || true", stdout)
         self.assertIn("podman rm -f redroid16kguestprobe", stdout)
+        self.assertNotIn("podman volume rm -f redroid16kguestprobe-data", stdout)
+
+    def test_restart_legacy_dry_run_uses_legacy_image(self) -> None:
+        result = self.run_script("--dry-run", "restart-legacy")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("graphics profile: guest-all-dri", stdout)
+        self.assertIn("localhost/redroid4k-root:alsa-hal-ranchu-exp2", stdout)
+        self.assertNotIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
+        self.assertIn("podman run -d --name redroid16kguestprobe", stdout)
+
+    def test_restart_legacy_preserve_data_dry_run_keeps_volume_and_uses_legacy_image(self) -> None:
+        result = self.run_script("--dry-run", "restart-legacy-preserve-data")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("localhost/redroid4k-root:alsa-hal-ranchu-exp2", stdout)
+        self.assertIn("setenforce 0 || true", stdout)
         self.assertNotIn("podman volume rm -f redroid16kguestprobe-data", stdout)
 
     def test_douyin_install_dry_run_uses_remote_staged_apk_by_default(self) -> None:

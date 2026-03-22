@@ -37,7 +37,8 @@ The verified runtime today is:
 - microVM dir: `/home/wjq/vm4k/ubuntu24k`
 - guest page size: `4096`
 - operator script: `redroid/scripts/redroid_guest4k_107.sh`
-- default image: `localhost/redroid4k-root:alsa-hal-ranchu-exp2`
+- default image: `localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322`
+- legacy fallback image: `localhost/redroid4k-root:alsa-hal-ranchu-exp2`
 - guest container: `redroid16kguestprobe`
 - host-visible guest ADB: `127.0.0.1:5556`
 - host-visible guest VNC: `127.0.0.1:5901`
@@ -52,6 +53,8 @@ The following has already been proven on the `Guest4K` mainline:
 - Android 16 boots to `sys.boot_completed=1`
 - `surfaceflinger` and HWC stay up
 - the guest graphics path is stable enough for real use
+- `ro.hardware.gralloc` reaches `minigbm`
+- logcat repeatedly reaches `Using gralloc0 CrOS API` on the promoted mainline
 - the display baseline is portrait and phone-shaped
 - VNC access works on the guest path
 - Douyin is installed
@@ -133,6 +136,8 @@ Supported actions:
 - `vm-status`
 - `restart`
 - `restart-preserve-data`
+- `restart-legacy`
+- `restart-legacy-preserve-data`
 - `status`
 - `verify`
 - `viewer`
@@ -156,6 +161,20 @@ If installed app state should be preserved:
 
 ```bash
 zsh redroid/scripts/redroid_guest4k_107.sh restart-preserve-data
+```
+
+If the promoted virgl mainline needs to be backed out quickly, use the explicit
+legacy fallback:
+
+```bash
+zsh redroid/scripts/redroid_guest4k_107.sh restart-legacy
+zsh redroid/scripts/redroid_guest4k_107.sh verify
+```
+
+If the legacy line also needs to preserve `/data`:
+
+```bash
+zsh redroid/scripts/redroid_guest4k_107.sh restart-legacy-preserve-data
 ```
 
 Douyin flow:
@@ -196,6 +215,41 @@ Host audio routing defaults:
 - `HOST_AUDIO_TARGET_SINK` can still override that behavior when needed
 - `HOST_AUDIO_MOVE_TO_TARGET=0` disables sink moves and only restores mute/volume
 
+Graphics experiment boot props:
+
+- the default Guest4K mainline is now the promoted srcbuild virgl minigbm path
+- if you want to compare a `mesa/virtio`-style guest configuration without changing the default
+  path, use opt-in env vars on `restart`
+
+Example:
+
+```bash
+REDROID_BOOT_HARDWARE_EGL=mesa \
+REDROID_BOOT_HARDWARE_VULKAN=virtio \
+REDROID_BOOT_CPU_VULKAN_VERSION=0 \
+REDROID_BOOT_OPENGLES_VERSION=196608 \
+zsh redroid/scripts/redroid_guest4k_107.sh restart
+```
+
+This remains experimental only. It is not the default mainline, and it should be
+treated as an A/B experiment surface.
+
+Latest verified result from the promoted srcbuild virgl mainline:
+
+- the default `restart` path now targets
+  `localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322`
+- live rollout and rollback validation already succeeded before promotion
+- the green runtime reached `ro.hardware.gralloc=minigbm`
+- the green runtime reached `sys.boot_completed=1`
+- the green runtime kept `init.svc.surfaceflinger=running`
+- filtered logcat repeatedly showed `Using gralloc0 CrOS API`
+- the old fallback / DRI import / `eglCreateImageKHR` failure chain stayed absent
+
+The older `ANGLE + SwiftShader` line remains available only as:
+
+- `restart-legacy`
+- `restart-legacy-preserve-data`
+
 ## Mainline Technical Shape
 
 The current `Guest4K` shape should be treated as intentional:
@@ -211,8 +265,8 @@ This shape won because it is the one that actually converged into a usable runti
 
 Current rendering fact:
 
-- the guest is still on `ANGLE + SwiftShader`, so graphics are functional but not yet on the final
-  GPU-backed path
+- the default mainline is now the source-consistent virgl minigbm line
+- the old `ANGLE + SwiftShader` stack has been demoted to explicit legacy fallback
 
 ## Why This Is The Mainline
 

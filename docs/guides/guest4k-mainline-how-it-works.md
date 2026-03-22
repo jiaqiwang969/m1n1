@@ -80,22 +80,48 @@ The script now cleans up any leftover Python screencap viewer before launching T
 
 The current display path is usable, but it is not yet the final graphics solution.
 
-Current fact from `SurfaceFlinger`:
+Current facts from the promoted srcbuild virgl mainline:
 
-- `ANGLE`
-- `SwiftShader`
+- `ro.hardware.gralloc=minigbm`
+- `sys.boot_completed=1`
+- `init.svc.surfaceflinger=running`
+- filtered logcat repeatedly shows `Using gralloc0 CrOS API`
 
 That means:
 
-- graphics are still software-rendered
-- the stack is operational
-- but graphics performance is still below where a final GPU-backed path should be
+- the validated default is no longer the old software-only fallback line
+- the stack is operational on the promoted source-consistent virgl path
+- graphics still need performance characterization, but the mainline is no longer
+  described by `ANGLE + SwiftShader`
 
 So when video stutters today, the right mental model is:
 
 - some of the pain was viewer overhead and host contention
 - that overhead has been reduced
-- but software rendering is still a real remaining bottleneck
+- the remaining work should be measured on the promoted virgl path first, not on
+  the old fallback assumptions
+
+Important separation:
+
+- the stable mainline is now the promoted srcbuild virgl path
+- the old `ANGLE + SwiftShader` line is preserved only as explicit legacy fallback
+- a separate `mesa/virtio` boot-prop experiment surface still exists, but it is not the
+  default operator path and it can still reproduce the old import-failure chain
+
+So there are really two different problems:
+
+- stable mainline: keep the promoted virgl path healthy and characterize its
+  remaining performance bottlenecks
+- experimental boot-prop line: still isolate and diagnose the narrower
+  `eglCreateImageKHR` import failure when explicitly opting into that surface
+
+The current best root-cause hypothesis for the experimental boot-prop line is now narrower:
+
+- virgl itself is not the first unknown anymore
+- the likely mismatch is that a renderable RGBA buffer is still going through the
+  external-texture import path
+- the next disciplined step is a minimal experiment around renderable-vs-external import
+  semantics, not more broad host tuning
 
 ## 5. Audio Path
 
@@ -206,6 +232,13 @@ zsh redroid/scripts/redroid_guest4k_107.sh viewer
 zsh redroid/scripts/redroid_guest4k_107.sh douyin-start
 ```
 
+If the promoted mainline needs to be backed out quickly:
+
+```bash
+zsh redroid/scripts/redroid_guest4k_107.sh restart-legacy
+zsh redroid/scripts/redroid_guest4k_107.sh verify
+```
+
 If sound is missing:
 
 ```bash
@@ -221,6 +254,8 @@ When changing this stack, preserve these properties unless there is a very stron
 - Redroid inside guest, not directly on host
 - TigerVNC as default viewer
 - host PipeWire as real audio sink
+- srcbuild virgl as the default restart surface
+- the old `ANGLE + SwiftShader` line only as explicit legacy fallback
 - main operator entrypoint:
   `redroid/scripts/redroid_guest4k_107.sh`
 
