@@ -776,7 +776,7 @@ bootstrap_gpu_config_if_running() {
       echo "${skip_label} ${state}"
       return 0
     fi
-    if podman exec "${container_name}" /system/bin/sh -lc '/vendor/bin/gpu_config.sh'; then
+    if podman exec "${container_name}" /system/bin/sh -lc '/vendor/bin/gpu_config.sh' 2>/dev/null; then
       return 0
     fi
     sleep 1

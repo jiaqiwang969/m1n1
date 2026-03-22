@@ -431,6 +431,20 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
             stdout,
         )
 
+    def test_virgl_srcbuild_probe_dry_run_suppresses_bootstrap_retry_stderr_until_final_attempt(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-probe")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            "if podman exec \"${container_name}\" /system/bin/sh -lc '/vendor/bin/gpu_config.sh' 2>/dev/null; then",
+            stdout,
+        )
+        self.assertIn(
+            "podman exec \"${container_name}\" /system/bin/sh -lc '/vendor/bin/gpu_config.sh' || true",
+            stdout,
+        )
+
     def test_virgl_srcbuild_longrun_dry_run_shows_portless_checkpoint_probe_shape(self) -> None:
         result = self.run_script("--dry-run", "virgl-srcbuild-longrun")
 
