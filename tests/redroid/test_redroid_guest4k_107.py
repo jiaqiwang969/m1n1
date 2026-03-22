@@ -313,6 +313,22 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("probe-override", stdout)
         self.assertIn("sleep 30", stdout)
 
+    def test_virgl_srcbuild_probe_dry_run_waits_for_logcat_clear_readiness_after_start(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-probe")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("logcat_cleared=0", stdout)
+        self.assertIn(
+            "if podman exec redroid16kguestprobe-virgl-renderable-srcbuildgralloc /system/bin/logcat -c >/dev/null 2>&1; then",
+            stdout,
+        )
+        self.assertIn('if [ "${logcat_cleared}" != "1" ]; then', stdout)
+        self.assertNotIn(
+            "podman exec redroid16kguestprobe-virgl-renderable-srcbuildgralloc /system/bin/logcat -c || true",
+            stdout,
+        )
+
     def test_virgl_srcbuild_longrun_dry_run_shows_checkpoint_probe_shape(self) -> None:
         result = self.run_script("--dry-run", "virgl-srcbuild-longrun")
 
@@ -356,6 +372,22 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("CHECKPOINT_T15_BEGIN", stdout)
         self.assertIn("CHECKPOINT_T45_BEGIN", stdout)
         self.assertIn("CHECKPOINT_T90_BEGIN", stdout)
+
+    def test_virgl_srcbuild_longrun_dry_run_waits_for_logcat_clear_readiness_after_start(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-longrun")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("logcat_cleared=0", stdout)
+        self.assertIn(
+            "if podman exec redroid16kguestprobe-virgl-renderable-srcbuildlongrun /system/bin/logcat -c >/dev/null 2>&1; then",
+            stdout,
+        )
+        self.assertIn('if [ "${logcat_cleared}" != "1" ]; then', stdout)
+        self.assertNotIn(
+            "podman exec redroid16kguestprobe-virgl-renderable-srcbuildlongrun /system/bin/logcat -c || true",
+            stdout,
+        )
 
     def test_virgl_srcbuild_rollout_dry_run_shows_clone_handoff_shape(self) -> None:
         result = self.run_script("--dry-run", "virgl-srcbuild-rollout")
@@ -500,6 +532,22 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("control-compare", stdout)
         self.assertIn("probe-compare", stdout)
         self.assertIn("sleep 30", stdout)
+
+    def test_virgl_fingerprint_compare_dry_run_waits_for_logcat_clear_readiness_after_start(self) -> None:
+        result = self.run_script("--dry-run", "virgl-fingerprint-compare")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("logcat_cleared=0", stdout)
+        self.assertIn(
+            "if podman exec redroid16kguestprobe-virgl-fingerprint-srcbuild /system/bin/logcat -c >/dev/null 2>&1; then",
+            stdout,
+        )
+        self.assertIn('if [ "${logcat_cleared}" != "1" ]; then', stdout)
+        self.assertNotIn(
+            "podman exec redroid16kguestprobe-virgl-fingerprint-srcbuild /system/bin/logcat -c || true",
+            stdout,
+        )
 
     def test_verify_dry_run_shows_host_visible_endpoints(self) -> None:
         result = self.run_script("--dry-run", "verify")

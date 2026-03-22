@@ -838,8 +838,10 @@ EOF
 
 probe_virgl_srcbuild() {
   local guest_cmd
+  local logcat_clear_cmd
 
   wait_for_guest_ssh
+  logcat_clear_cmd="$(guest_container_logcat_clear_cmd "${VIRGL_SRCBUILD_PROBE_CONTAINER}")"
 
   guest_cmd=$(cat <<EOF
 set -euo pipefail
@@ -858,7 +860,7 @@ podman start ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null
 echo "PROBE started"
 sleep 10
 echo "PROBE_STATE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
-podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/logcat -c || true
+${logcat_clear_cmd}
 sleep ${VIRGL_SRCBUILD_PROBE_SECONDS}
 echo 'PROPS_BEGIN'
 podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/sh -lc '/system/bin/getprop ro.hardware.gralloc; /system/bin/getprop sys.boot_completed; /system/bin/getprop init.svc.surfaceflinger' || true
@@ -887,8 +889,10 @@ probe_virgl_srcbuild_longrun() {
   local checkpoint=0
   local previous_checkpoint=0
   local delta=0
+  local logcat_clear_cmd
 
   wait_for_guest_ssh
+  logcat_clear_cmd="$(guest_container_logcat_clear_cmd "${VIRGL_SRCBUILD_LONGRUN_CONTAINER}")"
 
   for checkpoint in ${(z)VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS}; do
     if (( checkpoint < previous_checkpoint )); then
@@ -934,7 +938,7 @@ podman start ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null
 echo "PROBE started"
 sleep 10
 echo "PROBE_STATE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
-podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/logcat -c || true
+${logcat_clear_cmd}
 ${checkpoint_cmds}
 echo 'FINAL_FILES_BEGIN'
 podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/sh -lc '
@@ -1087,8 +1091,10 @@ EOF
 
 compare_virgl_fingerprints() {
   local guest_cmd
+  local logcat_clear_cmd
 
   wait_for_guest_ssh
+  logcat_clear_cmd="$(guest_container_logcat_clear_cmd "${VIRGL_FINGERPRINT_PROBE_CONTAINER}")"
 
   guest_cmd=$(cat <<EOF
 set -euo pipefail
@@ -1151,7 +1157,7 @@ echo "CONTROL stopped"
 podman start ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null
 echo "PROBE started"
 sleep 10
-podman exec ${VIRGL_FINGERPRINT_PROBE_CONTAINER} /system/bin/logcat -c || true
+${logcat_clear_cmd}
 sleep ${VIRGL_FINGERPRINT_SECONDS}
 fingerprint_container PROBE_STATE PROBE_PROPS_BEGIN PROBE_PROPS_END PROBE_LIBS_BEGIN PROBE_LIBS_END PROBE_LOGS_BEGIN PROBE_LOGS_END ${VIRGL_FINGERPRINT_PROBE_CONTAINER}
 trap - EXIT
