@@ -119,6 +119,15 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("-v /dev/dri:/dev/dri", stdout)
         self.assertNotIn("--network host", stdout)
 
+    def test_restart_dry_run_uses_quiet_guest_ssh_transport(self) -> None:
+        result = self.run_script("--dry-run", "restart")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("UserKnownHostsFile=/dev/null", stdout)
+        self.assertIn("GlobalKnownHostsFile=/dev/null", stdout)
+        self.assertIn("LogLevel=ERROR", stdout)
+
     def test_restart_dry_run_stops_preserved_virgl_port_owners_before_rebinding_standard_ports(self) -> None:
         result = self.run_script("--dry-run", "restart")
 
@@ -233,14 +242,16 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("RFB", stdout)
         self.assertNotIn("init.svc.vendor.vncserver", stdout)
 
-    def test_restart_dry_run_uses_bounded_quiet_adb_connect_poll_before_boot_wait(self) -> None:
+    def test_restart_dry_run_waits_for_adb_device_state_before_reporting_ready(self) -> None:
         result = self.run_script("--dry-run", "restart")
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
         self.assertIn(r"deadline=\$((\$(date +%s) + 30))", stdout)
-        self.assertIn("adb connect 127.0.0.1:5556 >/dev/null 2>&1 && break", stdout)
-        self.assertNotIn("adb connect 127.0.0.1:5556\nadb devices", stdout)
+        self.assertIn(r"state=\$(timeout 5 adb -s 127.0.0.1:5556 get-state 2>/dev/null | tr -d '\\r')", stdout)
+        self.assertIn(r'if [ \"\$state\" = \"device\" ]; then', stdout)
+        self.assertIn("ADB_READY %s %s", stdout)
+        self.assertNotIn("adb devices", stdout)
 
     def test_restart_dry_run_supports_guest_vkms_graphics_profile(self) -> None:
         result = self.run_script(

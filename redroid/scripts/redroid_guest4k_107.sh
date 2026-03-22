@@ -159,7 +159,7 @@ run_local() {
 
 run_remote() {
   local cmd="$1"
-  local ssh_cmd="ssh -o StrictHostKeyChecking=no ${REMOTE_SSH_TARGET} ${(qqq)cmd}"
+  local ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR ${REMOTE_SSH_TARGET} ${(qqq)cmd}"
 
   if (( DRY_RUN )); then
     printf 'DRY-RUN ssh: %s\n' "${REMOTE_SSH_TARGET}"
@@ -179,15 +179,15 @@ run_remote_capture() {
     return 0
   fi
 
-  ssh -o StrictHostKeyChecking=no "${REMOTE_SSH_TARGET}" "$cmd"
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR "${REMOTE_SSH_TARGET}" "$cmd"
 }
 
 guest_ssh_transport_cmd() {
   if [[ -n "${GUEST_SSH_PASSWORD}" ]]; then
-    printf "sshpass -p %q ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 -p %q %q@127.0.0.1" \
+    printf "sshpass -p %q ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 -p %q %q@127.0.0.1" \
       "${GUEST_SSH_PASSWORD}" "${GUEST_SSH_PORT}" "${GUEST_USER}"
   else
-    printf "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=5 -i %q -p %q %q@127.0.0.1" \
+    printf "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -i %q -p %q %q@127.0.0.1" \
       "${GUEST_SSH_KEY}" "${GUEST_SSH_PORT}" "${GUEST_USER}"
   fi
 }
@@ -313,7 +313,7 @@ sync_local_file_to_remote() {
   local local_path="$1"
   local remote_path="$2"
   local remote_target="${REMOTE_SSH_TARGET}:${remote_path}"
-  local scp_cmd="scp -o StrictHostKeyChecking=no ${(qqq)local_path} ${(qqq)remote_target}"
+  local scp_cmd="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR ${(qqq)local_path} ${(qqq)remote_target}"
 
   run_local "$scp_cmd"
 }
@@ -360,11 +360,21 @@ connect_adb() {
   cmd=$(cat <<EOF
 adb disconnect ${ADB_SERIAL} >/dev/null 2>&1 || true
 deadline=\$((\$(date +%s) + 30))
+last_state=unknown
 while [ \$(date +%s) -lt "\$deadline" ]; do
-  adb connect ${ADB_SERIAL} >/dev/null 2>&1 && break
+  adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+  state=\$(timeout 5 adb -s ${ADB_SERIAL} get-state 2>/dev/null | tr -d '\r')
+  if [ -n "\$state" ]; then
+    last_state="\$state"
+  fi
+  if [ "\$state" = "device" ]; then
+    printf 'ADB_READY %s %s\n' '${ADB_SERIAL}' "\$state"
+    exit 0
+  fi
   sleep 2
 done
-adb devices
+echo "Timed out waiting for adb device state on ${ADB_SERIAL}; last_state=\${last_state}" >&2
+exit 1
 EOF
 )
 
