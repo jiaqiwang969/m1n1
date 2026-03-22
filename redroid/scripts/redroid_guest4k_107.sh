@@ -91,11 +91,11 @@ Actions:
   douyin-start     Force-stop and launch Douyin on the Guest4K runtime
   douyin-diagnose  Print Guest4K Douyin app, audio, and filtered log surfaces
   audio-diagnose   Print Guest4K guest ALSA, Android audio, and host PipeWire surfaces
-  virgl-srcbuild-probe  Run the bounded source-consistent virgl clone probe and restore the control container
-  virgl-srcbuild-longrun  Run the source-consistent virgl long-run probe with periodic checkpoints and restore the control container
+  virgl-srcbuild-probe  Run the bounded source-consistent virgl probe in a portless temporary runtime with bounded mainline handoff
+  virgl-srcbuild-longrun  Run the source-consistent virgl long-run probe in a portless temporary runtime with periodic checkpoints and bounded mainline handoff
   virgl-srcbuild-rollout  Roll out the source-consistent virgl image onto the standard path with explicit rollback support
   virgl-srcbuild-rollback  Restore the preserved virgl control container after a source-consistent rollout attempt
-  virgl-fingerprint-compare  Compare failing-vs-green virgl runtime fingerprints and restore the control container
+  virgl-fingerprint-compare  Compare control-vs-probe virgl runtime fingerprints with sequential portless temporary runtimes under bounded mainline handoff
 EOF
 }
 
@@ -632,6 +632,12 @@ default_android_boot_args() {
   printf '%s' "${args}"
 }
 
+guest_container_binderfs_root_path() {
+  local container_name="$1"
+
+  printf '/tmp/%s-binderfs' "${container_name}"
+}
+
 restore_virgl_srcbuild_rollout() {
   local guest_cmd
 
@@ -664,6 +670,333 @@ done
 if [ "\${logcat_cleared}" != "1" ]; then
   podman exec ${container_name} /system/bin/logcat -c >/dev/null 2>&1 || true
 fi
+EOF
+}
+
+guest_container_runtime_guard_helper_cmd() {
+  cat <<'EOF'
+container_runtime_state() {
+  container_name="$1"
+  podman container inspect "${container_name}" --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}' 2>/dev/null || printf 'missing||'
+}
+
+podman_exec_if_running() {
+  container_name="$1"
+  skip_label="$2"
+  shift 2
+  state="$(container_runtime_state "${container_name}")"
+  if [ "${state%%|*}" = "running" ]; then
+    podman exec "${container_name}" "$@" || true
+  else
+    echo "${skip_label} ${state}"
+  fi
+}
+
+clear_container_logcat_if_running() {
+  container_name="$1"
+  attempts="${2:-5}"
+  state=""
+  for _ in $(seq 1 "${attempts}"); do
+    state="$(container_runtime_state "${container_name}")"
+    if [ "${state%%|*}" != "running" ]; then
+      echo "LOGCAT_CLEAR_SKIPPED ${state}"
+      return 0
+    fi
+    if podman exec "${container_name}" /system/bin/logcat -c >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  state="$(container_runtime_state "${container_name}")"
+  if [ "${state%%|*}" != "running" ]; then
+    echo "LOGCAT_CLEAR_SKIPPED ${state}"
+    return 0
+  fi
+
+  podman exec "${container_name}" /system/bin/logcat -c >/dev/null 2>&1 || true
+}
+EOF
+}
+
+guest_container_logcat_clear_if_running_cmd() {
+  local container_name="$1"
+  local attempts="${2:-5}"
+
+  cat <<EOF
+clear_container_logcat_if_running ${container_name} ${attempts}
+EOF
+}
+
+guest_container_mainline_handoff_helper_cmd() {
+  cat <<EOF
+mainline_was_running=0
+
+stop_standard_mainline_if_running() {
+  mainline_state="\$(podman container inspect ${CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || printf 'missing|')"
+  echo "MAINLINE_STATE_BEFORE \${mainline_state}"
+  if [ "\${mainline_state%%|*}" = "running" ]; then
+    podman stop -t 10 ${CONTAINER} >/dev/null 2>&1 || true
+    mainline_state="\$(podman container inspect ${CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || printf 'missing|')"
+    if [ "\${mainline_state%%|*}" != "exited" ] && [ "\${mainline_state%%|*}" != "stopped" ]; then
+      echo "MAINLINE_STOP_FAILED \${mainline_state}"
+      return 1
+    fi
+    mainline_was_running=1
+    echo "MAINLINE_STOPPED ${CONTAINER}"
+  fi
+}
+
+restore_standard_mainline_if_needed() {
+  if [ "\${mainline_was_running}" != "1" ]; then
+    return 0
+  fi
+
+  podman start ${CONTAINER} >/dev/null 2>&1 || true
+  mainline_state="\$(podman container inspect ${CONTAINER} --format '{{.State.Status}}|{{.ImageName}}' 2>/dev/null || printf 'missing|')"
+  if [ "\${mainline_state%%|*}" != "running" ]; then
+    echo "MAINLINE_RESTORE_FAILED \${mainline_state}"
+    return 1
+  fi
+  echo "MAINLINE_RESTORED \${mainline_state}"
+}
+EOF
+}
+
+guest_container_gpu_config_bootstrap_helper_cmd() {
+  cat <<'EOF'
+bootstrap_gpu_config_if_running() {
+  container_name="$1"
+  skip_label="$2"
+  attempts="${3:-5}"
+  state=""
+  for _ in $(seq 1 "${attempts}"); do
+    state="$(container_runtime_state "${container_name}")"
+    if [ "${state%%|*}" != "running" ]; then
+      echo "${skip_label} ${state}"
+      return 0
+    fi
+    if podman exec "${container_name}" /system/bin/sh -lc '/vendor/bin/gpu_config.sh'; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  state="$(container_runtime_state "${container_name}")"
+  if [ "${state%%|*}" != "running" ]; then
+    echo "${skip_label} ${state}"
+    return 0
+  fi
+
+  podman exec "${container_name}" /system/bin/sh -lc '/vendor/bin/gpu_config.sh' || true
+}
+EOF
+}
+
+guest_container_gpu_config_bootstrap_if_running_cmd() {
+  local container_name="$1"
+  local skip_label="$2"
+  local attempts="${3:-5}"
+
+  cat <<EOF
+bootstrap_gpu_config_if_running ${container_name} ${skip_label} ${attempts}
+EOF
+}
+
+guest_container_portless_runtime_helper_cmd() {
+  cat <<'EOF'
+create_portless_runtime_from_template() {
+  source_container="$1"
+  target_container="$2"
+  target_binder_root="$3"
+  target_image="${4:-}"
+  inspect_file=$(mktemp)
+  args_file=$(mktemp)
+  pending_mode=""
+  pending_option=""
+  found_image=0
+  saw_podman=0
+  saw_run=0
+  wrote_target_binder_mounts=0
+
+  cleanup_portless_runtime_files() {
+    rm -f "${inspect_file}" "${args_file}"
+  }
+
+  cleanup_target_binder_root() {
+    if [ -z "${target_binder_root}" ]; then
+      return 0
+    fi
+
+    umount "${target_binder_root}" >/dev/null 2>&1 || true
+    rmdir "${target_binder_root}" >/dev/null 2>&1 || true
+  }
+
+  prepare_target_binder_root() {
+    if [ -z "${target_binder_root}" ]; then
+      return 0
+    fi
+
+    umount "${target_binder_root}" >/dev/null 2>&1 || true
+    mkdir -p "${target_binder_root}"
+    mountpoint -q "${target_binder_root}" || mount -t binder binder "${target_binder_root}"
+    chmod 666 "${target_binder_root}"/* || true
+  }
+
+  write_portless_arg() {
+    printf '%s\0' "$1" >> "${args_file}"
+  }
+
+  binder_mount_value_isolated() {
+    case "$1" in
+      *:/dev/binder|*:/dev/binder:*|*:/dev/hwbinder|*:/dev/hwbinder:*|*:/dev/vndbinder|*:/dev/vndbinder:*)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+
+  maybe_write_mount_arg() {
+    mount_option="$1"
+    mount_value="$2"
+
+    if [ -n "${target_binder_root}" ] && binder_mount_value_isolated "${mount_value}"; then
+      return 0
+    fi
+
+    write_portless_arg "${mount_option}"
+    write_portless_arg "${mount_value}"
+  }
+
+  maybe_write_inline_mount_arg() {
+    mount_option="$1"
+    mount_value="$2"
+
+    if [ -n "${target_binder_root}" ] && binder_mount_value_isolated "${mount_value}"; then
+      return 0
+    fi
+
+    write_portless_arg "${mount_option}=${mount_value}"
+  }
+
+  write_target_binder_mount_args() {
+    if [ -z "${target_binder_root}" ] || [ "${wrote_target_binder_mounts}" = "1" ]; then
+      return 0
+    fi
+
+    write_portless_arg "-v"
+    write_portless_arg "${target_binder_root}/binder:/dev/binder"
+    write_portless_arg "-v"
+    write_portless_arg "${target_binder_root}/hwbinder:/dev/hwbinder"
+    write_portless_arg "-v"
+    write_portless_arg "${target_binder_root}/vndbinder:/dev/vndbinder"
+    wrote_target_binder_mounts=1
+  }
+
+  prepare_target_binder_root
+  podman container inspect "${source_container}" --format '{{range .Config.CreateCommand}}{{println .}}{{end}}' > "${inspect_file}"
+  : > "${args_file}"
+  write_portless_arg "--name"
+  write_portless_arg "${target_container}"
+
+  while IFS= read -r arg || [ -n "${arg}" ]; do
+    if [ "${saw_podman}" != "1" ]; then
+      if [ "${arg}" = "podman" ]; then
+        saw_podman=1
+      fi
+      continue
+    fi
+
+    if [ "${saw_run}" != "1" ]; then
+      if [ "${arg}" = "run" ]; then
+        saw_run=1
+      fi
+      continue
+    fi
+
+    if [ -n "${pending_mode}" ]; then
+      case "${pending_mode}" in
+        copy)
+          write_portless_arg "${pending_option}"
+          write_portless_arg "${arg}"
+          ;;
+        mount)
+          maybe_write_mount_arg "${pending_option}" "${arg}"
+          ;;
+        skip)
+          ;;
+      esac
+      pending_mode=""
+      pending_option=""
+      continue
+    fi
+
+    if [ -z "${arg}" ]; then
+      continue
+    fi
+
+    if [ "${found_image}" = "1" ]; then
+      write_portless_arg "${arg}"
+      continue
+    fi
+
+    case "${arg}" in
+      -d|--detach)
+        ;;
+      --name|-p|--publish)
+        pending_mode="skip"
+        ;;
+      --name=*|--publish=*)
+        ;;
+      -v|--volume|--mount)
+        pending_mode="mount"
+        pending_option="${arg}"
+        ;;
+      -v=*|--volume=*|--mount=*)
+        maybe_write_inline_mount_arg "${arg%%=*}" "${arg#*=}"
+        ;;
+      --entrypoint|--security-opt|--device|-e|--env|--annotation|--label|--add-host|--tmpfs|--sysctl|--ulimit|--shm-size|--workdir|-w|--user|-u|--hostname|--network|--ipc|--pid|--uts|--arch|--platform|--pull|--authfile|--cidfile|--cgroup-parent|--cpus|--cpuset-cpus|--cpuset-mems|--memory|--memory-swap|--pids-limit|--restart|--runtime|--stop-signal|--stop-timeout|--health-cmd|--health-interval|--health-retries|--health-start-period|--health-timeout|--log-driver|--log-opt|--gpus|--device-cgroup-rule|--group-add)
+        pending_mode="copy"
+        pending_option="${arg}"
+        ;;
+      --entrypoint=*|--security-opt=*|--device=*|-e=*|--env=*|--annotation=*|--label=*|--add-host=*|--tmpfs=*|--sysctl=*|--ulimit=*|--shm-size=*|--workdir=*|-w=*|--user=*|-u=*|--hostname=*|--network=*|--ipc=*|--pid=*|--uts=*|--arch=*|--platform=*|--pull=*|--authfile=*|--cidfile=*|--cgroup-parent=*|--cpus=*|--cpuset-cpus=*|--cpuset-mems=*|--memory=*|--memory-swap=*|--pids-limit=*|--restart=*|--runtime=*|--stop-signal=*|--stop-timeout=*|--health-cmd=*|--health-interval=*|--health-retries=*|--health-start-period=*|--health-timeout=*|--log-driver=*|--log-opt=*|--gpus=*|--device-cgroup-rule=*|--group-add=*)
+        write_portless_arg "${arg}"
+        ;;
+      --*)
+        write_portless_arg "${arg}"
+        ;;
+      -*)
+        write_portless_arg "${arg}"
+        ;;
+      *)
+        write_target_binder_mount_args
+        if [ -n "${target_image}" ]; then
+          write_portless_arg "${target_image}"
+        else
+          write_portless_arg "${arg}"
+        fi
+        found_image=1
+        ;;
+    esac
+  done < "${inspect_file}"
+
+  if [ "${found_image}" != "1" ]; then
+    cleanup_target_binder_root
+    cleanup_portless_runtime_files
+    echo "Unable to derive image position from ${source_container} CreateCommand" >&2
+    return 1
+  fi
+
+  if ! xargs -0 podman create < "${args_file}" >/dev/null; then
+    cleanup_target_binder_root
+    cleanup_portless_runtime_files
+    return 1
+  fi
+
+  cleanup_portless_runtime_files
+}
 EOF
 }
 
@@ -736,6 +1069,7 @@ rollout_health_needs_retry() {
 restart_redroid() {
   local image="${1:-${IMAGE}}"
   local preserve_data="${2:-0}"
+  local binder_root
   local guest_cmd
   local graphics_prep_cmd
   local graphics_mounts
@@ -749,6 +1083,7 @@ restart_redroid() {
   graphics_prep_cmd="$(graphics_prepare_cmd)"
   graphics_mounts="$(graphics_mount_args)"
   audio_prep_cmd="$(audio_prepare_cmd)"
+  binder_root="$(guest_container_binderfs_root_path "${CONTAINER}")"
   android_boot_args="$(default_android_boot_args)"
   if [[ "${preserve_data}" == "1" ]]; then
     volume_reset_cmd=":"
@@ -766,18 +1101,19 @@ for standard_port_container in ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} ${VIRGL_SRCBU
   podman stop -t 10 "\${standard_port_container}" >/dev/null 2>&1 || true
 done
 ${volume_reset_cmd}
-mkdir -p /dev/binderfs
-mountpoint -q /dev/binderfs || mount -t binder binder /dev/binderfs
-chmod 666 /dev/binderfs/* || true
+umount ${binder_root} >/dev/null 2>&1 || true
+mkdir -p ${binder_root}
+mountpoint -q ${binder_root} || mount -t binder binder ${binder_root}
+chmod 666 ${binder_root}/* || true
 ${graphics_prep_cmd}
 ${audio_prep_cmd}
 podman run -d --name ${CONTAINER} --pull=never --privileged --security-opt label=disable --security-opt unmask=all \\
   -p 5555:5555/tcp -p 5900:5900/tcp \\
   -v ${VOLUME_NAME}:/data \\
 ${graphics_mounts}
-  -v /dev/binderfs/binder:/dev/binder \\
-  -v /dev/binderfs/hwbinder:/dev/hwbinder \\
-  -v /dev/binderfs/vndbinder:/dev/vndbinder \\
+  -v ${binder_root}/binder:/dev/binder \\
+  -v ${binder_root}/hwbinder:/dev/hwbinder \\
+  -v ${binder_root}/vndbinder:/dev/vndbinder \\
   --entrypoint /init ${image} \\
   ${android_boot_args}
 podman ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
@@ -839,43 +1175,60 @@ EOF
 probe_virgl_srcbuild() {
   local guest_cmd
   local logcat_clear_cmd
+  local gpu_config_bootstrap_cmd
+  local gpu_config_bootstrap_helper_cmd
+  local mainline_handoff_helper_cmd
+  local portless_runtime_helper_cmd
+  local runtime_guard_helper_cmd
 
   wait_for_guest_ssh
-  logcat_clear_cmd="$(guest_container_logcat_clear_cmd "${VIRGL_SRCBUILD_PROBE_CONTAINER}")"
+  logcat_clear_cmd="$(guest_container_logcat_clear_if_running_cmd "${VIRGL_SRCBUILD_PROBE_CONTAINER}")"
+  gpu_config_bootstrap_cmd="$(guest_container_gpu_config_bootstrap_if_running_cmd "${VIRGL_SRCBUILD_PROBE_CONTAINER}" "GPU_CONFIG_BOOTSTRAP_SKIPPED")"
+  gpu_config_bootstrap_helper_cmd="$(guest_container_gpu_config_bootstrap_helper_cmd)"
+  mainline_handoff_helper_cmd="$(guest_container_mainline_handoff_helper_cmd)"
+  portless_runtime_helper_cmd="$(guest_container_portless_runtime_helper_cmd)"
+  runtime_guard_helper_cmd="$(guest_container_runtime_guard_helper_cmd)"
 
   guest_cmd=$(cat <<EOF
 set -euo pipefail
-restore() {
+${portless_runtime_helper_cmd}
+${runtime_guard_helper_cmd}
+${mainline_handoff_helper_cmd}
+${gpu_config_bootstrap_helper_cmd}
+cleanup() {
+  cleanup_status=0
   set +e
   podman stop -t 10 ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null 2>&1 || true
-  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+  podman rm -f ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null 2>&1 || true
+  restore_standard_mainline_if_needed || cleanup_status=\$?
+  return "\${cleanup_status}"
 }
-trap restore EXIT
+trap cleanup EXIT
+stop_standard_mainline_if_running
 podman rm -f ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null 2>&1 || true
-podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_PROBE_CONTAINER} ${VIRGL_SRCBUILD_IMAGE} >/dev/null
-echo "CLONE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.Name}}|{{.ImageName}}')"
-podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
-echo "CONTROL stopped"
+create_portless_runtime_from_template ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_PROBE_CONTAINER} "" ${VIRGL_SRCBUILD_IMAGE}
+echo "PORTLESS_CREATE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.Name}}|{{.ImageName}}|{{.HostConfig.PortBindings}}')"
 podman start ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null
 echo "PROBE started"
+echo 'GPU_CONFIG_BOOTSTRAP_BEGIN'
+${gpu_config_bootstrap_cmd}
+echo 'GPU_CONFIG_BOOTSTRAP_END'
 sleep 10
 echo "PROBE_STATE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
 ${logcat_clear_cmd}
 sleep ${VIRGL_SRCBUILD_PROBE_SECONDS}
 echo 'PROPS_BEGIN'
-podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/sh -lc '/system/bin/getprop ro.hardware.gralloc; /system/bin/getprop sys.boot_completed; /system/bin/getprop init.svc.surfaceflinger' || true
+podman_exec_if_running ${VIRGL_SRCBUILD_PROBE_CONTAINER} PROPS_SKIPPED /system/bin/sh -lc '/system/bin/getprop ro.hardware.gralloc; /system/bin/getprop sys.boot_completed; /system/bin/getprop init.svc.surfaceflinger'
 echo 'PROPS_END'
 echo 'FILES_BEGIN'
-podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/sh -lc 'ls -l /vendor/lib64/hw/gralloc.cros.so /vendor/lib64/hw/gralloc.minigbm.so 2>/dev/null || true' || true
+podman_exec_if_running ${VIRGL_SRCBUILD_PROBE_CONTAINER} FILES_SKIPPED /system/bin/sh -lc 'ls -l /vendor/lib64/hw/gralloc.cros.so /vendor/lib64/hw/gralloc.minigbm.so 2>/dev/null || true'
 echo 'FILES_END'
 echo 'LOGS_BEGIN'
-podman exec ${VIRGL_SRCBUILD_PROBE_CONTAINER} /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true' || true
+podman_exec_if_running ${VIRGL_SRCBUILD_PROBE_CONTAINER} LOGS_SKIPPED /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true'
 echo 'LOGS_END'
 echo "FINAL_STATE \$(podman container inspect ${VIRGL_SRCBUILD_PROBE_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
 trap - EXIT
-podman stop -t 10 ${VIRGL_SRCBUILD_PROBE_CONTAINER} >/dev/null 2>&1 || true
-podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
-echo "RESTORED \$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
+cleanup
 EOF
 )
 
@@ -890,9 +1243,19 @@ probe_virgl_srcbuild_longrun() {
   local previous_checkpoint=0
   local delta=0
   local logcat_clear_cmd
+  local gpu_config_bootstrap_cmd
+  local gpu_config_bootstrap_helper_cmd
+  local mainline_handoff_helper_cmd
+  local portless_runtime_helper_cmd
+  local runtime_guard_helper_cmd
 
   wait_for_guest_ssh
-  logcat_clear_cmd="$(guest_container_logcat_clear_cmd "${VIRGL_SRCBUILD_LONGRUN_CONTAINER}")"
+  logcat_clear_cmd="$(guest_container_logcat_clear_if_running_cmd "${VIRGL_SRCBUILD_LONGRUN_CONTAINER}")"
+  gpu_config_bootstrap_cmd="$(guest_container_gpu_config_bootstrap_if_running_cmd "${VIRGL_SRCBUILD_LONGRUN_CONTAINER}" "GPU_CONFIG_BOOTSTRAP_SKIPPED")"
+  gpu_config_bootstrap_helper_cmd="$(guest_container_gpu_config_bootstrap_helper_cmd)"
+  mainline_handoff_helper_cmd="$(guest_container_mainline_handoff_helper_cmd)"
+  portless_runtime_helper_cmd="$(guest_container_portless_runtime_helper_cmd)"
+  runtime_guard_helper_cmd="$(guest_container_runtime_guard_helper_cmd)"
 
   for checkpoint in ${(z)VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS}; do
     if (( checkpoint < previous_checkpoint )); then
@@ -903,7 +1266,7 @@ probe_virgl_srcbuild_longrun() {
     checkpoint_cmds+=$(cat <<EOF
 sleep ${delta}
 echo 'CHECKPOINT_T${checkpoint}_BEGIN'
-podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/sh -lc '
+podman_exec_if_running ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} CHECKPOINT_T${checkpoint}_PROPS_SKIPPED /system/bin/sh -lc '
 sf_pid=\$(/system/bin/pidof surfaceflinger 2>/dev/null || true)
 printf "ro.hardware.gralloc="
 /system/bin/getprop ro.hardware.gralloc
@@ -912,8 +1275,8 @@ printf "sys.boot_completed="
 printf "init.svc.surfaceflinger="
 /system/bin/getprop init.svc.surfaceflinger
 printf "surfaceflinger.pid=%s\n" "\${sf_pid}"
-' || true
-podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true' || true
+'
+podman_exec_if_running ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} CHECKPOINT_T${checkpoint}_LOGS_SKIPPED /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true'
 echo 'CHECKPOINT_T${checkpoint}_END'
 EOF
 )
@@ -923,25 +1286,34 @@ EOF
 
   guest_cmd=$(cat <<EOF
 set -euo pipefail
-restore() {
+${portless_runtime_helper_cmd}
+${runtime_guard_helper_cmd}
+${mainline_handoff_helper_cmd}
+${gpu_config_bootstrap_helper_cmd}
+cleanup() {
+  cleanup_status=0
   set +e
   podman stop -t 10 ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null 2>&1 || true
-  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+  podman rm -f ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null 2>&1 || true
+  restore_standard_mainline_if_needed || cleanup_status=\$?
+  return "\${cleanup_status}"
 }
-trap restore EXIT
+trap cleanup EXIT
+stop_standard_mainline_if_running
 podman rm -f ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null 2>&1 || true
-podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} ${VIRGL_SRCBUILD_IMAGE} >/dev/null
-echo "CLONE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.Name}}|{{.ImageName}}')"
-podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
-echo "CONTROL stopped"
+create_portless_runtime_from_template ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} "" ${VIRGL_SRCBUILD_IMAGE}
+echo "PORTLESS_CREATE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.Name}}|{{.ImageName}}|{{.HostConfig.PortBindings}}')"
 podman start ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null
 echo "PROBE started"
+echo 'GPU_CONFIG_BOOTSTRAP_BEGIN'
+${gpu_config_bootstrap_cmd}
+echo 'GPU_CONFIG_BOOTSTRAP_END'
 sleep 10
 echo "PROBE_STATE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
 ${logcat_clear_cmd}
 ${checkpoint_cmds}
 echo 'FINAL_FILES_BEGIN'
-podman exec ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} /system/bin/sh -lc '
+podman_exec_if_running ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} FINAL_FILES_SKIPPED /system/bin/sh -lc '
 for path in /vendor/lib64/hw/gralloc.cros.so /vendor/lib64/hw/gralloc.minigbm.so; do
   echo "FILE \$path"
   if [ -e "\$path" ]; then
@@ -950,13 +1322,11 @@ for path in /vendor/lib64/hw/gralloc.cros.so /vendor/lib64/hw/gralloc.minigbm.so
     echo "MISSING \$path"
   fi
 done
-' || true
+'
 echo 'FINAL_FILES_END'
 echo "FINAL_STATE \$(podman container inspect ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}')"
 trap - EXIT
-podman stop -t 10 ${VIRGL_SRCBUILD_LONGRUN_CONTAINER} >/dev/null 2>&1 || true
-podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
-echo "RESTORED \$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
+cleanup
 EOF
 )
 
@@ -1092,32 +1462,67 @@ EOF
 compare_virgl_fingerprints() {
   local guest_cmd
   local logcat_clear_cmd
+  local control_runtime_container="${VIRGL_SRCBUILD_CONTROL_CONTAINER}-fingerprintcontrol"
+  local control_logcat_clear_cmd
+  local control_gpu_config_bootstrap_cmd
+  local gpu_config_bootstrap_helper_cmd
+  local mainline_handoff_helper_cmd
+  local portless_runtime_helper_cmd
+  local probe_gpu_config_bootstrap_cmd
+  local runtime_guard_helper_cmd
 
   wait_for_guest_ssh
-  logcat_clear_cmd="$(guest_container_logcat_clear_cmd "${VIRGL_FINGERPRINT_PROBE_CONTAINER}")"
+  logcat_clear_cmd="$(guest_container_logcat_clear_if_running_cmd "${VIRGL_FINGERPRINT_PROBE_CONTAINER}")"
+  control_logcat_clear_cmd="$(guest_container_logcat_clear_if_running_cmd "${control_runtime_container}")"
+  control_gpu_config_bootstrap_cmd="$(guest_container_gpu_config_bootstrap_if_running_cmd "${control_runtime_container}" "CONTROL_GPU_CONFIG_BOOTSTRAP_SKIPPED")"
+  probe_gpu_config_bootstrap_cmd="$(guest_container_gpu_config_bootstrap_if_running_cmd "${VIRGL_FINGERPRINT_PROBE_CONTAINER}" "PROBE_GPU_CONFIG_BOOTSTRAP_SKIPPED")"
+  gpu_config_bootstrap_helper_cmd="$(guest_container_gpu_config_bootstrap_helper_cmd)"
+  mainline_handoff_helper_cmd="$(guest_container_mainline_handoff_helper_cmd)"
+  portless_runtime_helper_cmd="$(guest_container_portless_runtime_helper_cmd)"
+  runtime_guard_helper_cmd="$(guest_container_runtime_guard_helper_cmd)"
 
   guest_cmd=$(cat <<EOF
 set -euo pipefail
+${portless_runtime_helper_cmd}
+${runtime_guard_helper_cmd}
+${mainline_handoff_helper_cmd}
+${gpu_config_bootstrap_helper_cmd}
 fingerprint_container() {
   state_label="\$1"
   props_begin="\$2"
   props_end="\$3"
-  libs_begin="\$4"
-  libs_end="\$5"
-  logs_begin="\$6"
-  logs_end="\$7"
-  container="\$8"
+  props_skip="\$4"
+  libs_begin="\$5"
+  libs_end="\$6"
+  libs_skip="\$7"
+  logs_begin="\$8"
+  logs_end="\$9"
+  logs_skip="\${10}"
+  display_logs_begin="\${11}"
+  display_logs_end="\${12}"
+  display_logs_skip="\${13}"
+  container="\${14}"
   echo "\${state_label} \$(podman container inspect "\${container}" --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}|{{.ImageName}}')"
   echo "\${props_begin}"
-  podman exec "\${container}" /system/bin/sh -lc '
-for prop in ro.hardware.egl ro.hardware.vulkan ro.hardware.gralloc sys.boot_completed init.svc.surfaceflinger; do
+  podman_exec_if_running "\${container}" "\${props_skip}" /system/bin/sh -lc '
+for prop in \
+  ro.hardware.egl \
+  ro.hardware.vulkan \
+  ro.hardware.gralloc \
+  sys.boot_completed \
+  init.svc.surfaceflinger \
+  init.svc.vendor.hwcomposer-3 \
+  init.svc.vendor.graphics.allocator \
+  sys.init.updatable_crashing_process_name
+do
   printf "%s=" "\$prop"
   /system/bin/getprop "\$prop"
 done
-' || true
+ps -A | grep -E "(surfaceflinger|allocator|composer)" || true
+'
   echo "\${props_end}"
   echo "\${libs_begin}"
-  podman exec "\${container}" /system/bin/sh -lc '
+  podman_exec_if_running "\${container}" "\${libs_skip}" /system/bin/sh -lc '
 for path in \
   /system/lib64/libEGL.so \
   /vendor/lib64/egl/libEGL_mesa.so \
@@ -1136,34 +1541,61 @@ do
     echo "MISSING \$path"
   fi
 done
-' || true
+'
   echo "\${libs_end}"
   echo "\${logs_begin}"
-  podman exec "\${container}" /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true' || true
+  podman_exec_if_running "\${container}" "\${logs_skip}" /system/bin/sh -lc '/system/bin/logcat -d | grep -E "Using gralloc0 CrOS API|Using fallback gralloc implementation|failed to create DRI image from FD|eglCreateImageKHR failed|Failed to create a valid texture" || true'
   echo "\${logs_end}"
+  echo "\${display_logs_begin}"
+  podman_exec_if_running "\${container}" "\${display_logs_skip}" /system/bin/sh -lc '/system/bin/logcat -d | grep -Ei "SurfaceFlinger|hotplug|composer|hwc|HWC|drm_hwcomposer|allocator" | tail -n 120 || true'
+  echo "\${display_logs_end}"
 }
-restore() {
+cleanup() {
+  cleanup_status=0
   set +e
+  podman stop -t 10 ${control_runtime_container} >/dev/null 2>&1 || true
+  podman rm -f ${control_runtime_container} >/dev/null 2>&1 || true
   podman stop -t 10 ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
-  podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
+  podman rm -f ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
+  restore_standard_mainline_if_needed || cleanup_status=\$?
+  return "\${cleanup_status}"
 }
-trap restore EXIT
+trap cleanup EXIT
+stop_standard_mainline_if_running
+echo 'CONTROL_CAPTURE_BEGIN'
+podman rm -f ${control_runtime_container} >/dev/null 2>&1 || true
+create_portless_runtime_from_template ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${control_runtime_container} ""
+echo "CONTROL_PORTLESS_CREATE \$(podman container inspect ${control_runtime_container} --format '{{.Name}}|{{.ImageName}}|{{.HostConfig.PortBindings}}')"
+podman start ${control_runtime_container} >/dev/null
+echo "CONTROL started"
+echo 'CONTROL_GPU_CONFIG_BOOTSTRAP_BEGIN'
+${control_gpu_config_bootstrap_cmd}
+echo 'CONTROL_GPU_CONFIG_BOOTSTRAP_END'
+sleep 10
+${control_logcat_clear_cmd}
+sleep ${VIRGL_FINGERPRINT_SECONDS}
+fingerprint_container CONTROL_STATE CONTROL_PROPS_BEGIN CONTROL_PROPS_END CONTROL_PROPS_SKIPPED CONTROL_LIBS_BEGIN CONTROL_LIBS_END CONTROL_LIBS_SKIPPED CONTROL_LOGS_BEGIN CONTROL_LOGS_END CONTROL_LOGS_SKIPPED CONTROL_DISPLAY_LOGS_BEGIN CONTROL_DISPLAY_LOGS_END CONTROL_DISPLAY_LOGS_SKIPPED ${control_runtime_container}
+podman stop -t 10 ${control_runtime_container} >/dev/null 2>&1 || true
+podman rm -f ${control_runtime_container} >/dev/null 2>&1 || true
+echo 'CONTROL_CAPTURE_END'
+echo 'PROBE_CAPTURE_BEGIN'
 podman rm -f ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
-fingerprint_container CONTROL_STATE CONTROL_PROPS_BEGIN CONTROL_PROPS_END CONTROL_LIBS_BEGIN CONTROL_LIBS_END CONTROL_LOGS_BEGIN CONTROL_LOGS_END ${VIRGL_SRCBUILD_CONTROL_CONTAINER}
-podman container clone ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_FINGERPRINT_PROBE_CONTAINER} ${VIRGL_SRCBUILD_IMAGE} >/dev/null
-echo "CLONE \$(podman container inspect ${VIRGL_FINGERPRINT_PROBE_CONTAINER} --format '{{.Name}}|{{.ImageName}}')"
-podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
-echo "CONTROL stopped"
+create_portless_runtime_from_template ${VIRGL_SRCBUILD_CONTROL_CONTAINER} ${VIRGL_FINGERPRINT_PROBE_CONTAINER} "" ${VIRGL_SRCBUILD_IMAGE}
+echo "PROBE_PORTLESS_CREATE \$(podman container inspect ${VIRGL_FINGERPRINT_PROBE_CONTAINER} --format '{{.Name}}|{{.ImageName}}|{{.HostConfig.PortBindings}}')"
 podman start ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null
 echo "PROBE started"
+echo 'PROBE_GPU_CONFIG_BOOTSTRAP_BEGIN'
+${probe_gpu_config_bootstrap_cmd}
+echo 'PROBE_GPU_CONFIG_BOOTSTRAP_END'
 sleep 10
 ${logcat_clear_cmd}
 sleep ${VIRGL_FINGERPRINT_SECONDS}
-fingerprint_container PROBE_STATE PROBE_PROPS_BEGIN PROBE_PROPS_END PROBE_LIBS_BEGIN PROBE_LIBS_END PROBE_LOGS_BEGIN PROBE_LOGS_END ${VIRGL_FINGERPRINT_PROBE_CONTAINER}
-trap - EXIT
+fingerprint_container PROBE_STATE PROBE_PROPS_BEGIN PROBE_PROPS_END PROBE_PROPS_SKIPPED PROBE_LIBS_BEGIN PROBE_LIBS_END PROBE_LIBS_SKIPPED PROBE_LOGS_BEGIN PROBE_LOGS_END PROBE_LOGS_SKIPPED PROBE_DISPLAY_LOGS_BEGIN PROBE_DISPLAY_LOGS_END PROBE_DISPLAY_LOGS_SKIPPED ${VIRGL_FINGERPRINT_PROBE_CONTAINER}
 podman stop -t 10 ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
-podman start ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null
-echo "RESTORED \$(podman container inspect ${VIRGL_SRCBUILD_CONTROL_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
+podman rm -f ${VIRGL_FINGERPRINT_PROBE_CONTAINER} >/dev/null 2>&1 || true
+echo 'PROBE_CAPTURE_END'
+trap - EXIT
+cleanup
 EOF
 )
 

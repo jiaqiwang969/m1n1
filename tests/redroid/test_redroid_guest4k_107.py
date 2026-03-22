@@ -49,6 +49,18 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("virgl-srcbuild-rollout", usage_header)
         self.assertIn("virgl-srcbuild-rollback", usage_header)
         self.assertIn("virgl-fingerprint-compare", usage_header)
+        self.assertIn(
+            "virgl-srcbuild-probe  Run the bounded source-consistent virgl probe in a portless temporary runtime with bounded mainline handoff",
+            stdout,
+        )
+        self.assertIn(
+            "virgl-srcbuild-longrun  Run the source-consistent virgl long-run probe in a portless temporary runtime with periodic checkpoints and bounded mainline handoff",
+            stdout,
+        )
+        self.assertIn(
+            "virgl-fingerprint-compare  Compare control-vs-probe virgl runtime fingerprints with sequential portless temporary runtimes under bounded mainline handoff",
+            stdout,
+        )
 
     def test_vm_script_overrides_are_used_in_dry_run(self) -> None:
         env = {
@@ -164,6 +176,18 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("chgrp -R 1005 /dev/snd", stdout)
         self.assertIn("chmod 660 /dev/snd/*", stdout)
 
+    def test_restart_dry_run_uses_container_scoped_binderfs_mounts(self) -> None:
+        result = self.run_script("--dry-run", "restart")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("mountpoint -q /tmp/redroid16kguestprobe-binderfs || mount -t binder binder /tmp/redroid16kguestprobe-binderfs", stdout)
+        self.assertIn("chmod 666 /tmp/redroid16kguestprobe-binderfs/* || true", stdout)
+        self.assertIn("-v /tmp/redroid16kguestprobe-binderfs/binder:/dev/binder", stdout)
+        self.assertIn("-v /tmp/redroid16kguestprobe-binderfs/hwbinder:/dev/hwbinder", stdout)
+        self.assertIn("-v /tmp/redroid16kguestprobe-binderfs/vndbinder:/dev/vndbinder", stdout)
+        self.assertNotIn("-v /dev/binderfs/binder:/dev/binder", stdout)
+
     def test_restart_dry_run_targets_card0_for_guest_gpu_node(self) -> None:
         result = self.run_script("--dry-run", "restart")
 
@@ -276,13 +300,34 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertNotIn("-v /dev/dri:/dev/dri", stdout)
         self.assertNotIn("--network host", stdout)
 
-    def test_virgl_srcbuild_probe_dry_run_shows_clone_probe_restore_shape(self) -> None:
+    def test_virgl_srcbuild_probe_dry_run_shows_portless_createcommand_probe_shape(self) -> None:
         result = self.run_script("--dry-run", "virgl-srcbuild-probe")
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
         self.assertIn("virgl-srcbuild-probe", stdout)
-        self.assertIn("podman container clone", stdout)
+        self.assertIn("create_portless_runtime_from_template()", stdout)
+        self.assertIn("container_runtime_state()", stdout)
+        self.assertIn("podman_exec_if_running()", stdout)
+        self.assertIn("clear_container_logcat_if_running()", stdout)
+        self.assertIn("bootstrap_gpu_config_if_running()", stdout)
+        self.assertIn(
+            "podman container inspect \"${source_container}\" --format '{{range .Config.CreateCommand}}{{println .}}{{end}}'",
+            stdout,
+        )
+        self.assertIn("PORTLESS_CREATE $(podman container inspect redroid16kguestprobe-virgl-renderable-srcbuildgralloc", stdout)
+        self.assertIn("GPU_CONFIG_BOOTSTRAP_BEGIN", stdout)
+        self.assertIn("GPU_CONFIG_BOOTSTRAP_END", stdout)
+        self.assertIn("GPU_CONFIG_BOOTSTRAP_SKIPPED", stdout)
+        self.assertIn(
+            "podman exec \"${container_name}\" /system/bin/sh -lc '/vendor/bin/gpu_config.sh'",
+            stdout,
+        )
+        self.assertIn("LOGCAT_CLEAR_SKIPPED", stdout)
+        self.assertIn("PROPS_SKIPPED", stdout)
+        self.assertIn("FILES_SKIPPED", stdout)
+        self.assertIn("LOGS_SKIPPED", stdout)
+        self.assertIn("{{.HostConfig.PortBindings}}", stdout)
         self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
         self.assertIn("redroid16kguestprobe-virgl-renderable-srcbuildgralloc", stdout)
         self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
@@ -292,7 +337,63 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertNotIn('%q', stdout)
         self.assertIn("Using gralloc0 CrOS API", stdout)
         self.assertIn("Failed to create a valid texture", stdout)
-        self.assertIn("podman start redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertNotIn("podman container clone", stdout)
+        self.assertIn("MAINLINE_STATE_BEFORE", stdout)
+        self.assertIn("podman stop -t 10 redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
+        self.assertIn("MAINLINE_STOPPED redroid16kguestprobe", stdout)
+        self.assertIn("podman start redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
+        self.assertIn("MAINLINE_RESTORED", stdout)
+        self.assertNotIn("-p 5555:5555/tcp", stdout)
+        self.assertNotIn("-p 5900:5900/tcp", stdout)
+
+    def test_virgl_srcbuild_probe_dry_run_uses_global_binderfs_during_bounded_handoff(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-probe")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            'create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-renderable-srcbuildgralloc "" localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322',
+            stdout,
+        )
+        self.assertNotIn(
+            "create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-renderable-srcbuildgralloc /tmp/redroid16kguestprobe-virgl-renderable-srcbuildgralloc-binderfs",
+            stdout,
+        )
+
+    def test_virgl_srcbuild_probe_dry_run_verifies_mainline_stops_before_probe(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-probe")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            'mainline_state="$(podman container inspect redroid16kguestprobe --format \'{{.State.Status}}|{{.ImageName}}\' 2>/dev/null || printf \'missing|\')"',
+            stdout,
+        )
+        self.assertIn(
+            'if [ "${mainline_state%%|*}" != "exited" ] && [ "${mainline_state%%|*}" != "stopped" ]; then',
+            stdout,
+        )
+        self.assertIn('echo "MAINLINE_STOP_FAILED ${mainline_state}"', stdout)
+
+    def test_virgl_srcbuild_probe_dry_run_verifies_mainline_restore_succeeds(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-probe")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn('cleanup_status=0', stdout)
+        self.assertIn('restore_standard_mainline_if_needed || cleanup_status=$?', stdout)
+        self.assertIn('return "${cleanup_status}"', stdout)
+        self.assertIn('echo "MAINLINE_RESTORE_FAILED ${mainline_state}"', stdout)
+        self.assertIn('if [ "${mainline_state%%|*}" != "running" ]; then', stdout)
+
+    def test_virgl_srcbuild_probe_dry_run_portless_helper_skips_empty_args(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-probe")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn('if [ -z "${arg}" ]; then', stdout)
+        self.assertIn("continue", stdout)
+        self.assertIn('if [ "${found_image}" = "1" ]; then', stdout)
 
     def test_virgl_srcbuild_probe_dry_run_honors_override_env(self) -> None:
         result = self.run_script(
@@ -318,24 +419,42 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
-        self.assertIn("logcat_cleared=0", stdout)
+        self.assertIn("clear_container_logcat_if_running()", stdout)
         self.assertIn(
-            "if podman exec redroid16kguestprobe-virgl-renderable-srcbuildgralloc /system/bin/logcat -c >/dev/null 2>&1; then",
+            "clear_container_logcat_if_running redroid16kguestprobe-virgl-renderable-srcbuildgralloc 5",
             stdout,
         )
-        self.assertIn('if [ "${logcat_cleared}" != "1" ]; then', stdout)
+        self.assertIn('echo "LOGCAT_CLEAR_SKIPPED ${state}"', stdout)
+        self.assertNotIn("logcat_cleared=0", stdout)
         self.assertNotIn(
             "podman exec redroid16kguestprobe-virgl-renderable-srcbuildgralloc /system/bin/logcat -c || true",
             stdout,
         )
 
-    def test_virgl_srcbuild_longrun_dry_run_shows_checkpoint_probe_shape(self) -> None:
+    def test_virgl_srcbuild_longrun_dry_run_shows_portless_checkpoint_probe_shape(self) -> None:
         result = self.run_script("--dry-run", "virgl-srcbuild-longrun")
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
         self.assertIn("virgl-srcbuild-longrun", stdout)
-        self.assertIn("podman container clone", stdout)
+        self.assertIn("create_portless_runtime_from_template()", stdout)
+        self.assertIn("container_runtime_state()", stdout)
+        self.assertIn("podman_exec_if_running()", stdout)
+        self.assertIn("clear_container_logcat_if_running()", stdout)
+        self.assertIn("bootstrap_gpu_config_if_running()", stdout)
+        self.assertIn("PORTLESS_CREATE $(podman container inspect redroid16kguestprobe-virgl-renderable-srcbuildlongrun", stdout)
+        self.assertIn("GPU_CONFIG_BOOTSTRAP_BEGIN", stdout)
+        self.assertIn("GPU_CONFIG_BOOTSTRAP_END", stdout)
+        self.assertIn("GPU_CONFIG_BOOTSTRAP_SKIPPED", stdout)
+        self.assertIn(
+            "podman exec \"${container_name}\" /system/bin/sh -lc '/vendor/bin/gpu_config.sh'",
+            stdout,
+        )
+        self.assertIn("LOGCAT_CLEAR_SKIPPED", stdout)
+        self.assertIn("CHECKPOINT_T30_PROPS_SKIPPED", stdout)
+        self.assertIn("CHECKPOINT_T30_LOGS_SKIPPED", stdout)
+        self.assertIn("FINAL_FILES_SKIPPED", stdout)
+        self.assertIn("{{.HostConfig.PortBindings}}", stdout)
         self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
         self.assertIn("redroid16kguestprobe-virgl-renderable-srcbuildlongrun", stdout)
         self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
@@ -350,7 +469,28 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("FINAL_FILES_BEGIN", stdout)
         self.assertIn("/vendor/lib64/hw/gralloc.cros.so", stdout)
         self.assertIn("/vendor/lib64/hw/gralloc.minigbm.so", stdout)
-        self.assertIn("RESTORED", stdout)
+        self.assertNotIn("podman container clone", stdout)
+        self.assertIn("MAINLINE_STATE_BEFORE", stdout)
+        self.assertIn("podman stop -t 10 redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
+        self.assertIn("MAINLINE_STOPPED redroid16kguestprobe", stdout)
+        self.assertIn("podman start redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
+        self.assertIn("MAINLINE_RESTORED", stdout)
+        self.assertNotIn("-p 5555:5555/tcp", stdout)
+        self.assertNotIn("-p 5900:5900/tcp", stdout)
+
+    def test_virgl_srcbuild_longrun_dry_run_uses_global_binderfs_during_bounded_handoff(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-longrun")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            'create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-renderable-srcbuildlongrun "" localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322',
+            stdout,
+        )
+        self.assertNotIn(
+            "create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-renderable-srcbuildlongrun /tmp/redroid16kguestprobe-virgl-renderable-srcbuildlongrun-binderfs",
+            stdout,
+        )
 
     def test_virgl_srcbuild_longrun_dry_run_honors_override_env(self) -> None:
         result = self.run_script(
@@ -378,12 +518,13 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
-        self.assertIn("logcat_cleared=0", stdout)
+        self.assertIn("clear_container_logcat_if_running()", stdout)
         self.assertIn(
-            "if podman exec redroid16kguestprobe-virgl-renderable-srcbuildlongrun /system/bin/logcat -c >/dev/null 2>&1; then",
+            "clear_container_logcat_if_running redroid16kguestprobe-virgl-renderable-srcbuildlongrun 5",
             stdout,
         )
-        self.assertIn('if [ "${logcat_cleared}" != "1" ]; then', stdout)
+        self.assertIn('echo "LOGCAT_CLEAR_SKIPPED ${state}"', stdout)
+        self.assertNotIn("logcat_cleared=0", stdout)
         self.assertNotIn(
             "podman exec redroid16kguestprobe-virgl-renderable-srcbuildlongrun /system/bin/logcat -c || true",
             stdout,
@@ -503,16 +644,91 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("CONTROL_LIBS_BEGIN", stdout)
         self.assertIn("PROBE_STATE", stdout)
         self.assertIn("PROBE_LIBS_BEGIN", stdout)
-        self.assertIn("podman container clone", stdout)
+        self.assertIn("create_portless_runtime_from_template()", stdout)
+        self.assertIn("container_runtime_state()", stdout)
+        self.assertIn("podman_exec_if_running()", stdout)
+        self.assertIn("clear_container_logcat_if_running()", stdout)
+        self.assertIn("bootstrap_gpu_config_if_running()", stdout)
+        self.assertIn("CONTROL_PORTLESS_CREATE", stdout)
+        self.assertIn("PROBE_PORTLESS_CREATE", stdout)
+        self.assertIn("CONTROL_CAPTURE_BEGIN", stdout)
+        self.assertIn("CONTROL_CAPTURE_END", stdout)
+        self.assertIn("PROBE_CAPTURE_BEGIN", stdout)
+        self.assertIn("PROBE_CAPTURE_END", stdout)
+        self.assertIn("CONTROL_GPU_CONFIG_BOOTSTRAP_BEGIN", stdout)
+        self.assertIn("CONTROL_GPU_CONFIG_BOOTSTRAP_END", stdout)
+        self.assertIn("CONTROL_GPU_CONFIG_BOOTSTRAP_SKIPPED", stdout)
+        self.assertIn("PROBE_GPU_CONFIG_BOOTSTRAP_BEGIN", stdout)
+        self.assertIn("PROBE_GPU_CONFIG_BOOTSTRAP_END", stdout)
+        self.assertIn("PROBE_GPU_CONFIG_BOOTSTRAP_SKIPPED", stdout)
+        self.assertIn(
+            "podman exec \"${container_name}\" /system/bin/sh -lc '/vendor/bin/gpu_config.sh'",
+            stdout,
+        )
+        self.assertIn("CONTROL_PROPS_SKIPPED", stdout)
+        self.assertIn("CONTROL_LIBS_SKIPPED", stdout)
+        self.assertIn("CONTROL_LOGS_SKIPPED", stdout)
+        self.assertIn("PROBE_PROPS_SKIPPED", stdout)
+        self.assertIn("PROBE_LIBS_SKIPPED", stdout)
+        self.assertIn("PROBE_LOGS_SKIPPED", stdout)
+        self.assertIn("{{.HostConfig.PortBindings}}", stdout)
         self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
         self.assertIn("redroid16kguestprobe-virgl-fingerprint-srcbuild", stdout)
+        self.assertIn("redroid16kguestprobe-virgl-renderable-gralloc4trace-fingerprintcontrol", stdout)
         self.assertIn("localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322", stdout)
         self.assertIn("/system/bin/toybox sha256sum", stdout)
         self.assertIn("/system/lib64/libEGL.so", stdout)
         self.assertIn("/vendor/lib64/egl/libEGL_mesa.so", stdout)
         self.assertIn("/vendor/lib64/hw/gralloc.cros.so", stdout)
         self.assertIn("sleep 90", stdout)
-        self.assertIn("podman start redroid16kguestprobe-virgl-renderable-gralloc4trace", stdout)
+        self.assertNotIn("podman container clone", stdout)
+        self.assertIn("MAINLINE_STATE_BEFORE", stdout)
+        self.assertIn("podman stop -t 10 redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
+        self.assertIn("MAINLINE_STOPPED redroid16kguestprobe", stdout)
+        self.assertIn("podman start redroid16kguestprobe >/dev/null 2>&1 || true", stdout)
+        self.assertIn("MAINLINE_RESTORED", stdout)
+        self.assertLess(stdout.index("CONTROL_CAPTURE_BEGIN"), stdout.index("CONTROL_CAPTURE_END"))
+        self.assertLess(stdout.index("CONTROL_CAPTURE_END"), stdout.index("PROBE_CAPTURE_BEGIN"))
+        self.assertLess(stdout.index("PROBE_CAPTURE_BEGIN"), stdout.index("PROBE_CAPTURE_END"))
+        self.assertNotIn("-p 5555:5555/tcp", stdout)
+        self.assertNotIn("-p 5900:5900/tcp", stdout)
+
+    def test_virgl_fingerprint_compare_dry_run_uses_global_binderfs_for_sequential_hostmode_runtimes(self) -> None:
+        result = self.run_script("--dry-run", "virgl-fingerprint-compare")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            'create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-renderable-gralloc4trace-fingerprintcontrol ""',
+            stdout,
+        )
+        self.assertIn(
+            'create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-fingerprint-srcbuild "" localhost/redroid4k-root:virgl-srcbuild-grallocminigbm-20260322',
+            stdout,
+        )
+        self.assertNotIn(
+            "create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-renderable-gralloc4trace-fingerprintcontrol /tmp/redroid16kguestprobe-virgl-renderable-gralloc4trace-fingerprintcontrol-binderfs",
+            stdout,
+        )
+        self.assertNotIn(
+            "create_portless_runtime_from_template redroid16kguestprobe-virgl-renderable-gralloc4trace redroid16kguestprobe-virgl-fingerprint-srcbuild /tmp/redroid16kguestprobe-virgl-fingerprint-srcbuild-binderfs",
+            stdout,
+        )
+
+    def test_virgl_fingerprint_compare_dry_run_surfaces_hwc_diagnostics(self) -> None:
+        result = self.run_script("--dry-run", "virgl-fingerprint-compare")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("init.svc.vendor.hwcomposer-3", stdout)
+        self.assertIn("init.svc.vendor.graphics.allocator", stdout)
+        self.assertIn("sys.init.updatable_crashing_process_name", stdout)
+        self.assertIn('ps -A | grep -E "(surfaceflinger|allocator|composer)" || true', stdout)
+        self.assertIn("CONTROL_DISPLAY_LOGS_BEGIN", stdout)
+        self.assertIn("CONTROL_DISPLAY_LOGS_END", stdout)
+        self.assertIn("PROBE_DISPLAY_LOGS_BEGIN", stdout)
+        self.assertIn("PROBE_DISPLAY_LOGS_END", stdout)
+        self.assertIn("SurfaceFlinger|hotplug|composer|hwc|HWC|drm_hwcomposer|allocator", stdout)
 
     def test_virgl_fingerprint_compare_dry_run_honors_override_env(self) -> None:
         result = self.run_script(
@@ -538,12 +754,17 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
-        self.assertIn("logcat_cleared=0", stdout)
+        self.assertIn("clear_container_logcat_if_running()", stdout)
         self.assertIn(
-            "if podman exec redroid16kguestprobe-virgl-fingerprint-srcbuild /system/bin/logcat -c >/dev/null 2>&1; then",
+            "clear_container_logcat_if_running redroid16kguestprobe-virgl-fingerprint-srcbuild 5",
             stdout,
         )
-        self.assertIn('if [ "${logcat_cleared}" != "1" ]; then', stdout)
+        self.assertIn(
+            "clear_container_logcat_if_running redroid16kguestprobe-virgl-renderable-gralloc4trace-fingerprintcontrol 5",
+            stdout,
+        )
+        self.assertIn('echo "LOGCAT_CLEAR_SKIPPED ${state}"', stdout)
+        self.assertNotIn("logcat_cleared=0", stdout)
         self.assertNotIn(
             "podman exec redroid16kguestprobe-virgl-fingerprint-srcbuild /system/bin/logcat -c || true",
             stdout,
