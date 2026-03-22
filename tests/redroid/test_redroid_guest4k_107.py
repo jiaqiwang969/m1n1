@@ -419,6 +419,22 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("ROLLOUT_HEALTH_RETRY_END", stdout)
         self.assertIn("sleep 30", stdout)
 
+    def test_virgl_srcbuild_rollout_dry_run_waits_for_logcat_clear_readiness_after_start(self) -> None:
+        result = self.run_script("--dry-run", "virgl-srcbuild-rollout")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("logcat_cleared=0", stdout)
+        self.assertIn(
+            "if podman exec redroid16kguestprobe-virgl-renderable-srcbuildrollout /system/bin/logcat -c >/dev/null 2>&1; then",
+            stdout,
+        )
+        self.assertIn('if [ "${logcat_cleared}" != "1" ]; then', stdout)
+        self.assertNotIn(
+            "podman exec redroid16kguestprobe-virgl-renderable-srcbuildrollout /system/bin/logcat -c || true",
+            stdout,
+        )
+
     def test_virgl_srcbuild_rollout_dry_run_reuses_control_runtime_shape_instead_of_rebuilding_it(self) -> None:
         result = self.run_script("--dry-run", "virgl-srcbuild-rollout")
 

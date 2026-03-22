@@ -648,6 +648,25 @@ EOF
   run_guest_sudo "${guest_cmd}"
 }
 
+guest_container_logcat_clear_cmd() {
+  local container_name="$1"
+  local attempts="${2:-5}"
+
+  cat <<EOF
+logcat_cleared=0
+for _ in \$(seq 1 ${attempts}); do
+  if podman exec ${container_name} /system/bin/logcat -c >/dev/null 2>&1; then
+    logcat_cleared=1
+    break
+  fi
+  sleep 1
+done
+if [ "\${logcat_cleared}" != "1" ]; then
+  podman exec ${container_name} /system/bin/logcat -c >/dev/null 2>&1 || true
+fi
+EOF
+}
+
 rollout_health_capture_cmd() {
   local begin_marker="$1"
   local end_marker="$2"
@@ -948,10 +967,12 @@ rollout_virgl_srcbuild() {
   local health_retry_cmd
   local health_retry_output=""
   local combined_health_output
+  local logcat_clear_cmd
 
   require_supported_graphics_profile
   vm_start
   wait_for_guest_ssh
+  logcat_clear_cmd="$(guest_container_logcat_clear_cmd "${VIRGL_SRCBUILD_ROLLOUT_CONTAINER}")"
 
   guest_cmd=$(cat <<EOF
 set -euo pipefail
@@ -981,7 +1002,7 @@ handoff_started=1
 podman stop -t 10 ${CONTAINER} >/dev/null 2>&1 || true
 podman stop -t 10 ${VIRGL_SRCBUILD_CONTROL_CONTAINER} >/dev/null 2>&1 || true
 podman start ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} >/dev/null
-podman exec ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} /system/bin/logcat -c || true
+${logcat_clear_cmd}
 echo "ROLLOUT_STARTED \$(podman container inspect ${VIRGL_SRCBUILD_ROLLOUT_CONTAINER} --format '{{.State.Status}}|{{.ImageName}}')"
 trap - EXIT
 EOF
