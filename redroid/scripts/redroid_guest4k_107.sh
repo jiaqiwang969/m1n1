@@ -42,6 +42,14 @@ VIRGL_SRCBUILD_LONGRUN_CONTAINER="${VIRGL_SRCBUILD_LONGRUN_CONTAINER:-redroid16k
 VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS="${VIRGL_SRCBUILD_LONGRUN_CHECKPOINTS:-30 60 120 180}"
 VIRGL_SRCBUILD_ROLLOUT_CONTAINER="${VIRGL_SRCBUILD_ROLLOUT_CONTAINER:-redroid16kguestprobe-virgl-renderable-srcbuildrollout}"
 VIRGL_SRCBUILD_ROLLOUT_RETRY_SECONDS="${VIRGL_SRCBUILD_ROLLOUT_RETRY_SECONDS:-30}"
+VIRGL_SRCBUILD_IMPORT_IMAGE="${VIRGL_SRCBUILD_IMPORT_IMAGE:-localhost/redroid4k-root:virgl-srcbuild-imported}"
+VIRGL_SRCBUILD_IMPORT_HOST_SYSTEM_IMG="${VIRGL_SRCBUILD_IMPORT_HOST_SYSTEM_IMG:-/home/wjq/redroid-artifacts/guest4k-srcbuild-import/system.img}"
+VIRGL_SRCBUILD_IMPORT_HOST_VENDOR_IMG="${VIRGL_SRCBUILD_IMPORT_HOST_VENDOR_IMG:-/home/wjq/redroid-artifacts/guest4k-srcbuild-import/vendor.img}"
+VIRGL_SRCBUILD_IMPORT_LOCAL_SYSTEM_IMG="${VIRGL_SRCBUILD_IMPORT_LOCAL_SYSTEM_IMG:-}"
+VIRGL_SRCBUILD_IMPORT_LOCAL_VENDOR_IMG="${VIRGL_SRCBUILD_IMPORT_LOCAL_VENDOR_IMG:-}"
+VIRGL_SRCBUILD_IMPORT_GUEST_DIR="${VIRGL_SRCBUILD_IMPORT_GUEST_DIR:-/var/tmp/guest4k-srcbuild-import}"
+VIRGL_SRCBUILD_IMPORT_COMPAT_REF_IMAGE="${VIRGL_SRCBUILD_IMPORT_COMPAT_REF_IMAGE:-}"
+VIRGL_SRCBUILD_IMPORT_COMPAT_OVERLAY_FILES="${VIRGL_SRCBUILD_IMPORT_COMPAT_OVERLAY_FILES:-/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu /vendor/lib64/hw/gralloc.minigbm.so /vendor/lib64/hw/mapper.minigbm.so}"
 VIRGL_FINGERPRINT_PROBE_CONTAINER="${VIRGL_FINGERPRINT_PROBE_CONTAINER:-redroid16kguestprobe-virgl-fingerprint-srcbuild}"
 VIRGL_FINGERPRINT_SECONDS="${VIRGL_FINGERPRINT_SECONDS:-90}"
 DOUYIN_PACKAGE="${DOUYIN_PACKAGE:-com.ss.android.ugc.aweme}"
@@ -51,8 +59,14 @@ REMOTE_DOUYIN_APK_PATH="${REMOTE_DOUYIN_APK_PATH:-/tmp/douyin.apk}"
 DOUYIN_AUDIO_STATUS_LINES="${DOUYIN_AUDIO_STATUS_LINES:-40}"
 DOUYIN_LOGCAT_LINES="${DOUYIN_LOGCAT_LINES:-60}"
 DOUYIN_LOGCAT_FILTER="${DOUYIN_LOGCAT_FILTER:-aweme|AudioFlinger|audio_hw_primary|android\\.hardware\\.audio|pcm|tinyalsa|libttmplayer|AndroidRuntime|FATAL EXCEPTION|crash}"
+PERF_TOP_LINES="${PERF_TOP_LINES:-20}"
+PERF_DISPLAY_LINES="${PERF_DISPLAY_LINES:-80}"
+PERF_LOG_LINES="${PERF_LOG_LINES:-120}"
 LEGACY_GUEST_CONTAINERS="${LEGACY_GUEST_CONTAINERS:-redroid16kbridgeprobe}"
 VIEWER_MODE="${VIEWER_MODE:-vnc}"
+GUEST4K_PERF_PRESET="${GUEST4K_PERF_PRESET:-powersave}"
+GUEST4K_TIGERVNC_PROFILE="${GUEST4K_TIGERVNC_PROFILE:-}"
+GUEST4K_TIGERVNC_FLAGS="${GUEST4K_TIGERVNC_FLAGS:-}"
 LOCAL_VIEWER_PATH="${LOCAL_VIEWER_PATH:-${REPO_ROOT}/redroid/tools/redroid_viewer.py}"
 REMOTE_VIEWER_PATH="${REMOTE_VIEWER_PATH:-/tmp/redroid_viewer.py}"
 GRAPHICS_PROFILE="${GRAPHICS_PROFILE:-guest-all-dri}"
@@ -70,11 +84,15 @@ REDROID_BOOT_CPU_VULKAN_VERSION="${REDROID_BOOT_CPU_VULKAN_VERSION:-}"
 REDROID_BOOT_OPENGLES_VERSION="${REDROID_BOOT_OPENGLES_VERSION:-}"
 REDROID_BOOT_DEBUG_HWUI_RENDERER="${REDROID_BOOT_DEBUG_HWUI_RENDERER:-}"
 REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND="${REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND:-}"
+GUEST4K_DRM_REFRESH_PROFILE="${GUEST4K_DRM_REFRESH_PROFILE:-}"
+GUEST4K_ANDROID_DISPLAY_PROFILE="${GUEST4K_ANDROID_DISPLAY_PROFILE:-}"
+REDROID_BOOT_HWCOMPOSER_DRM_REFRESH_RATE_CAP="${REDROID_BOOT_HWCOMPOSER_DRM_REFRESH_RATE_CAP:-}"
+REDROID_BOOT_USE_DMABUFHEAPS="${REDROID_BOOT_USE_DMABUFHEAPS:-auto}"
 DRY_RUN=0
 
 usage() {
   cat <<'EOF'
-Usage: zsh redroid/scripts/redroid_guest4k_107.sh [--dry-run] <vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare>
+Usage: zsh redroid/scripts/redroid_guest4k_107.sh [--dry-run] <vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|perf-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-import|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare>
 
 Actions:
   vm-start   Start the 4 KB Ubuntu microVM on the remote Asahi host
@@ -86,13 +104,15 @@ Actions:
   restart-legacy-preserve-data  Recreate the legacy guest Redroid container without deleting its /data volume
   status     Show VM state, guest page size, and guest container status
   verify     Verify guest SSH plus host-visible ADB and VNC endpoints
-  viewer     Launch the Guest4K viewer on the remote KDE desktop (default: TigerVNC, fallback: VIEWER_MODE=python)
+  viewer     Launch the Guest4K viewer on the remote KDE desktop (default: TigerVNC adaptive under the default powersave preset, lossless via GUEST4K_TIGERVNC_PROFILE=lossless, fallback: VIEWER_MODE=python)
   douyin-install   Install the staged Douyin APK onto the Guest4K runtime
   douyin-start     Force-stop and launch Douyin on the Guest4K runtime
   douyin-diagnose  Print Guest4K Douyin app, audio, and filtered log surfaces
   audio-diagnose   Print Guest4K guest ALSA, Android audio, and host PipeWire surfaces
+  perf-diagnose    Print Guest4K host/guest CPU, display, codec, and filtered graphics/video logs
   virgl-srcbuild-probe  Run the bounded source-consistent virgl probe in a portless temporary runtime with bounded mainline handoff
   virgl-srcbuild-longrun  Run the source-consistent virgl long-run probe in a portless temporary runtime with periodic checkpoints and bounded mainline handoff
+  virgl-srcbuild-import  Import a staged Guest4K system/vendor image pair into a new guest-rootful Podman image tag
   virgl-srcbuild-rollout  Roll out the source-consistent virgl image onto the standard path with explicit rollback support
   virgl-srcbuild-rollback  Restore the preserved virgl control container after a source-consistent rollout attempt
   virgl-fingerprint-compare  Compare control-vs-probe virgl runtime fingerprints with sequential portless temporary runtimes under bounded mainline handoff
@@ -124,6 +144,28 @@ require_local_file() {
   fi
 }
 
+validate_local_virgl_import_payload() {
+  local has_local_system=0
+  local has_local_vendor=0
+
+  if [[ -n "${VIRGL_SRCBUILD_IMPORT_LOCAL_SYSTEM_IMG}" ]]; then
+    has_local_system=1
+  fi
+  if [[ -n "${VIRGL_SRCBUILD_IMPORT_LOCAL_VENDOR_IMG}" ]]; then
+    has_local_vendor=1
+  fi
+
+  if (( has_local_system != has_local_vendor )); then
+    printf 'VIRGL_SRCBUILD_IMPORT_LOCAL_SYSTEM_IMG and VIRGL_SRCBUILD_IMPORT_LOCAL_VENDOR_IMG must be set together.\n' >&2
+    return 1
+  fi
+
+  if (( has_local_system )) && (( ! DRY_RUN )); then
+    require_local_file "${VIRGL_SRCBUILD_IMPORT_LOCAL_SYSTEM_IMG}" "local virgl import system image"
+    require_local_file "${VIRGL_SRCBUILD_IMPORT_LOCAL_VENDOR_IMG}" "local virgl import vendor image"
+  fi
+}
+
 require_supported_graphics_profile() {
   case "${GRAPHICS_PROFILE}" in
     guest-all-dri|guest-vkms)
@@ -142,6 +184,101 @@ require_supported_viewer_mode() {
     *)
       printf 'Unsupported VIEWER_MODE: %s\n' "${VIEWER_MODE}" >&2
       return 1
+      ;;
+  esac
+}
+
+require_supported_perf_preset() {
+  case "${GUEST4K_PERF_PRESET}" in
+    balanced|lowcpu|powersave|'')
+      ;;
+    *)
+      printf 'Unsupported GUEST4K_PERF_PRESET: %s\n' "${GUEST4K_PERF_PRESET}" >&2
+      return 1
+      ;;
+  esac
+}
+
+require_supported_tigervnc_profile() {
+  case "${GUEST4K_TIGERVNC_PROFILE}" in
+    lossless|adaptive|'')
+      ;;
+    *)
+      printf 'Unsupported GUEST4K_TIGERVNC_PROFILE: %s\n' "${GUEST4K_TIGERVNC_PROFILE}" >&2
+      return 1
+      ;;
+  esac
+}
+
+require_supported_android_display_profile() {
+  case "${GUEST4K_ANDROID_DISPLAY_PROFILE}" in
+    native|lowcpu|powersave|playback|streaming|'')
+      ;;
+    *)
+      printf 'Unsupported GUEST4K_ANDROID_DISPLAY_PROFILE: %s\n' "${GUEST4K_ANDROID_DISPLAY_PROFILE}" >&2
+      return 1
+      ;;
+  esac
+}
+
+redroid_vnc_boot_enabled() {
+  [[ "${REDROID_VNC_BOOT}" != "0" ]]
+}
+
+apply_perf_preset_defaults() {
+  local preset_android_display_profile
+  local preset_drm_refresh_profile
+  local preset_tigervnc_profile
+
+  require_supported_perf_preset
+
+  case "${GUEST4K_PERF_PRESET}" in
+    balanced|'')
+      preset_android_display_profile="native"
+      preset_drm_refresh_profile="balanced"
+      preset_tigervnc_profile="lossless"
+      ;;
+    lowcpu)
+      preset_android_display_profile="lowcpu"
+      preset_drm_refresh_profile="lowcpu"
+      preset_tigervnc_profile="adaptive"
+      ;;
+    powersave)
+      preset_android_display_profile="powersave"
+      preset_drm_refresh_profile="powersave"
+      preset_tigervnc_profile="adaptive"
+      ;;
+  esac
+
+  if [[ -z "${GUEST4K_ANDROID_DISPLAY_PROFILE}" ]]; then
+    GUEST4K_ANDROID_DISPLAY_PROFILE="${preset_android_display_profile}"
+  fi
+  if [[ -z "${GUEST4K_DRM_REFRESH_PROFILE}" ]]; then
+    GUEST4K_DRM_REFRESH_PROFILE="${preset_drm_refresh_profile}"
+  fi
+  if [[ -z "${GUEST4K_TIGERVNC_PROFILE}" ]]; then
+    GUEST4K_TIGERVNC_PROFILE="${preset_tigervnc_profile}"
+  fi
+}
+
+resolve_qemu_scanout_size() {
+  require_supported_android_display_profile
+
+  case "${GUEST4K_ANDROID_DISPLAY_PROFILE}" in
+    native|'')
+      printf '800 1280'
+      ;;
+    lowcpu)
+      printf '720 1152'
+      ;;
+    powersave)
+      printf '640 1024'
+      ;;
+    playback)
+      printf '540 864'
+      ;;
+    streaming)
+      printf '480 768'
       ;;
   esac
 }
@@ -189,6 +326,16 @@ guest_ssh_transport_cmd() {
   else
     printf "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -i %q -p %q %q@127.0.0.1" \
       "${GUEST_SSH_KEY}" "${GUEST_SSH_PORT}" "${GUEST_USER}"
+  fi
+}
+
+guest_scp_transport_cmd() {
+  if [[ -n "${GUEST_SSH_PASSWORD}" ]]; then
+    printf "sshpass -p %q scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=5 -P %q" \
+      "${GUEST_SSH_PASSWORD}" "${GUEST_SSH_PORT}"
+  else
+    printf "scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -i %q -P %q" \
+      "${GUEST_SSH_KEY}" "${GUEST_SSH_PORT}"
   fi
 }
 
@@ -277,6 +424,7 @@ remote_script_cmd() {
 
 vm_launch_env_prefix() {
   local env_prefix=""
+  local -a qemu_scanout_size
 
   if [[ -n "${VM_PIPEWIRE_QUANTUM}" ]]; then
     env_prefix+="PIPEWIRE_QUANTUM=${(q)VM_PIPEWIRE_QUANTUM} "
@@ -306,6 +454,10 @@ vm_launch_env_prefix() {
     env_prefix+="QEMU_SMP=${(q)VM_QEMU_SMP} "
   fi
 
+  qemu_scanout_size=("${(@s: :)$(resolve_qemu_scanout_size)}")
+  env_prefix+="QEMU_XRES=${(q)qemu_scanout_size[1]} "
+  env_prefix+="QEMU_YRES=${(q)qemu_scanout_size[2]} "
+
   printf '%s' "${env_prefix}"
 }
 
@@ -316,6 +468,27 @@ sync_local_file_to_remote() {
   local scp_cmd="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR ${(qqq)local_path} ${(qqq)remote_target}"
 
   run_local "$scp_cmd"
+}
+
+stage_local_virgl_import_payload_to_remote() {
+  local remote_system_dir="${VIRGL_SRCBUILD_IMPORT_HOST_SYSTEM_IMG:h}"
+  local remote_vendor_dir="${VIRGL_SRCBUILD_IMPORT_HOST_VENDOR_IMG:h}"
+  local remote_mkdir_cmd="mkdir -p ${(qqq)remote_system_dir}"
+
+  validate_local_virgl_import_payload
+
+  if [[ -z "${VIRGL_SRCBUILD_IMPORT_LOCAL_SYSTEM_IMG}" ]]; then
+    return 0
+  fi
+
+  if [[ "${remote_vendor_dir}" != "${remote_system_dir}" ]]; then
+    remote_mkdir_cmd+=" ${(qqq)remote_vendor_dir}"
+  fi
+
+  log "staging local Guest4K images onto ${REMOTE_HOST}"
+  run_remote "${remote_mkdir_cmd}"
+  sync_local_file_to_remote "${VIRGL_SRCBUILD_IMPORT_LOCAL_SYSTEM_IMG}" "${VIRGL_SRCBUILD_IMPORT_HOST_SYSTEM_IMG}"
+  sync_local_file_to_remote "${VIRGL_SRCBUILD_IMPORT_LOCAL_VENDOR_IMG}" "${VIRGL_SRCBUILD_IMPORT_HOST_VENDOR_IMG}"
 }
 
 vm_start() {
@@ -386,9 +559,10 @@ wait_for_boot() {
   local wait_cmd
   local vnc_probe_cmd
 
-  vnc_probe_cmd="$(vnc_banner_probe_cmd)"
+  if redroid_vnc_boot_enabled; then
+    vnc_probe_cmd="$(vnc_banner_probe_cmd)"
 
-  wait_cmd=$(cat <<EOF
+    wait_cmd=$(cat <<EOF
 adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
 deadline=\$((\$(date +%s) + 120))
 while [ \$(date +%s) -lt "\$deadline" ]; do
@@ -403,17 +577,74 @@ exit 1
 EOF
 )
 
-  log "waiting for Android boot and VNC banner on ${ADB_SERIAL}"
+    log "waiting for Android boot and VNC banner on ${ADB_SERIAL}"
+  else
+    wait_cmd=$(cat <<EOF
+adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+deadline=\$((\$(date +%s) + 120))
+while [ \$(date +%s) -lt "\$deadline" ]; do
+  boot=\$(timeout 5 adb -s ${ADB_SERIAL} shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+  if [ "\$boot" = "1" ]; then
+    exit 0
+  fi
+  sleep 2
+done
+echo "Timed out waiting for Android boot on ${ADB_SERIAL}" >&2
+exit 1
+EOF
+)
+
+    log "waiting for Android boot on ${ADB_SERIAL}"
+  fi
+
   run_remote "bash -lc ${(qqq)wait_cmd}"
 }
 
 normalize_android_display_cmd() {
   cat <<EOF
 adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+profile="${GUEST4K_ANDROID_DISPLAY_PROFILE}"
 adb -s ${ADB_SERIAL} shell wm size reset >/dev/null 2>&1 || true
 adb -s ${ADB_SERIAL} shell wm density reset >/dev/null 2>&1 || true
 adb -s ${ADB_SERIAL} shell settings delete global display_size_forced >/dev/null 2>&1 || true
 adb -s ${ADB_SERIAL} shell settings delete secure display_density_forced >/dev/null 2>&1 || true
+resolve_default_density() {
+  default_density=\$(adb -s ${ADB_SERIAL} shell wm density 2>/dev/null | tr -d '\r' | sed -n 's/.*Physical density: \\([0-9][0-9]*\\).*/\\1/p' | head -n 1)
+  if ! printf '%s' "\${default_density}" | grep -Eq '^[0-9]+$'; then
+    default_density=\$(adb -s ${ADB_SERIAL} shell getprop ro.sf.lcd_density 2>/dev/null | tr -d '\r' | sed -n '1s/[^0-9].*$//p')
+  fi
+  if ! printf '%s' "\${default_density}" | grep -Eq '^[0-9]+$'; then
+    default_density=320
+  fi
+}
+case "\${profile}" in
+  native|'')
+    ;;
+  lowcpu)
+    resolve_default_density
+    target_density=\$((default_density * 90 / 100))
+    adb -s ${ADB_SERIAL} shell wm size 720x1152 >/dev/null 2>&1 || true
+    adb -s ${ADB_SERIAL} shell wm density "\${target_density}" >/dev/null 2>&1 || true
+    ;;
+  powersave)
+    resolve_default_density
+    target_density=\$((default_density * 80 / 100))
+    adb -s ${ADB_SERIAL} shell wm size 640x1024 >/dev/null 2>&1 || true
+    adb -s ${ADB_SERIAL} shell wm density "\${target_density}" >/dev/null 2>&1 || true
+    ;;
+  playback)
+    resolve_default_density
+    target_density=\$((default_density * 27 / 40))
+    adb -s ${ADB_SERIAL} shell wm size 540x864 >/dev/null 2>&1 || true
+    adb -s ${ADB_SERIAL} shell wm density "\${target_density}" >/dev/null 2>&1 || true
+    ;;
+  streaming)
+    resolve_default_density
+    target_density=\$((default_density * 3 / 5))
+    adb -s ${ADB_SERIAL} shell wm size 480x768 >/dev/null 2>&1 || true
+    adb -s ${ADB_SERIAL} shell wm density "\${target_density}" >/dev/null 2>&1 || true
+    ;;
+esac
 adb -s ${ADB_SERIAL} shell wm size 2>/dev/null || true
 adb -s ${ADB_SERIAL} shell wm density 2>/dev/null || true
 EOF
@@ -422,13 +653,54 @@ EOF
 normalize_android_display() {
   local cmd
 
+  require_supported_android_display_profile
   cmd="$(normalize_android_display_cmd)"
-  log "resetting Android display overrides on ${ADB_SERIAL}"
+  log "applying Android display profile ${GUEST4K_ANDROID_DISPLAY_PROFILE} on ${ADB_SERIAL}"
+  run_remote "bash -lc ${(qqq)cmd}"
+}
+
+repair_guest_vnc_after_surfaceflinger_restart_cmd() {
+  local banner_probe_cmd
+
+  banner_probe_cmd="$(vnc_banner_probe_cmd)"
+  cat <<EOF
+adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+vnc_boottime=\$(adb -s ${ADB_SERIAL} shell getprop ro.boottime.vncserver 2>/dev/null | tr -d '\r')
+sf_boottime=\$(adb -s ${ADB_SERIAL} shell getprop ro.boottime.surfaceflinger 2>/dev/null | tr -d '\r')
+if printf '%s' "\${vnc_boottime}" | grep -Eq '^[0-9]+\$' && printf '%s' "\${sf_boottime}" | grep -Eq '^[0-9]+\$' && [ "\${vnc_boottime}" -lt "\${sf_boottime}" ]; then
+  adb -s ${ADB_SERIAL} root >/dev/null 2>&1 || true
+  sleep 1
+  adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+  adb -s ${ADB_SERIAL} shell stop vncserver >/dev/null 2>&1 || true
+  sleep 1
+  adb -s ${ADB_SERIAL} shell start vncserver >/dev/null 2>&1 || true
+  deadline=\$((\$(date +%s) + 15))
+  while [ \$(date +%s) -lt "\${deadline}" ]; do
+    vnc_state=\$(adb -s ${ADB_SERIAL} shell getprop init.svc.vncserver 2>/dev/null | tr -d '\r')
+    if [ "\${vnc_state}" = "running" ] && bash -lc ${(qqq)banner_probe_cmd} >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+fi
+EOF
+}
+
+repair_guest_vnc_after_surfaceflinger_restart() {
+  local cmd
+
+  if ! redroid_vnc_boot_enabled; then
+    return 0
+  fi
+
+  cmd="$(repair_guest_vnc_after_surfaceflinger_restart_cmd)"
+  log "repairing guest VNC if surfaceflinger restarted after vncserver"
   run_remote "bash -lc ${(qqq)cmd}"
 }
 
 post_boot_prepare() {
   normalize_android_display
+  repair_guest_vnc_after_surfaceflinger_restart
   recover_host_audio_stream
 }
 
@@ -590,8 +862,32 @@ chmod 660 /dev/snd/* >/dev/null 2>&1 || true
 EOF
 }
 
+resolve_hwcomposer_drm_refresh_rate_cap() {
+  if [[ -n "${REDROID_BOOT_HWCOMPOSER_DRM_REFRESH_RATE_CAP}" ]]; then
+    printf '%s' "${REDROID_BOOT_HWCOMPOSER_DRM_REFRESH_RATE_CAP}"
+    return 0
+  fi
+
+  case "${GUEST4K_DRM_REFRESH_PROFILE}" in
+    balanced|'')
+      printf '60'
+      ;;
+    lowcpu)
+      printf '45'
+      ;;
+    powersave)
+      printf '30'
+      ;;
+    *)
+      printf 'Unsupported GUEST4K_DRM_REFRESH_PROFILE: %s\n' "${GUEST4K_DRM_REFRESH_PROFILE}" >&2
+      return 1
+      ;;
+  esac
+}
+
 android_boot_graphics_args() {
   local args=()
+  local hwcomposer_drm_refresh_rate_cap
 
   if [[ -n "${REDROID_BOOT_HARDWARE_EGL}" ]]; then
     args+=("androidboot.hardwareegl=${REDROID_BOOT_HARDWARE_EGL}")
@@ -615,6 +911,11 @@ android_boot_graphics_args() {
 
   if [[ -n "${REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND}" ]]; then
     args+=("androidboot.debug.renderengine.backend=${REDROID_BOOT_DEBUG_RENDERENGINE_BACKEND}")
+  fi
+
+  hwcomposer_drm_refresh_rate_cap="$(resolve_hwcomposer_drm_refresh_rate_cap)"
+  if [[ -n "${hwcomposer_drm_refresh_rate_cap}" ]]; then
+    args+=("androidboot.hardware.hwcomposer.drm_refresh_rate_cap=${hwcomposer_drm_refresh_rate_cap}")
   fi
 
   printf '%s' "${(j: :)args}"
@@ -1105,6 +1406,14 @@ umount ${binder_root} >/dev/null 2>&1 || true
 mkdir -p ${binder_root}
 mountpoint -q ${binder_root} || mount -t binder binder ${binder_root}
 chmod 666 ${binder_root}/* || true
+runtime_android_boot_args=${(qqq)android_boot_args}
+if [ "${REDROID_BOOT_USE_DMABUFHEAPS}" = "auto" ]; then
+  if [ -c /dev/dma_heap/system ]; then
+    runtime_android_boot_args="\${runtime_android_boot_args} androidboot.use_dmabufheaps=1"
+  fi
+elif [ -n "${REDROID_BOOT_USE_DMABUFHEAPS}" ]; then
+  runtime_android_boot_args="\${runtime_android_boot_args} androidboot.use_dmabufheaps=${REDROID_BOOT_USE_DMABUFHEAPS}"
+fi
 ${graphics_prep_cmd}
 ${audio_prep_cmd}
 podman run -d --name ${CONTAINER} --pull=never --privileged --security-opt label=disable --security-opt unmask=all \\
@@ -1115,7 +1424,7 @@ ${graphics_mounts}
   -v ${binder_root}/hwbinder:/dev/hwbinder \\
   -v ${binder_root}/vndbinder:/dev/vndbinder \\
   --entrypoint /init ${image} \\
-  ${android_boot_args}
+  \${runtime_android_boot_args}
 podman ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
 EOF
 )
@@ -1163,13 +1472,15 @@ EOF
   boot_cmd=$(cat <<EOF
 timeout 5 adb -s ${ADB_SERIAL} shell getprop sys.boot_completed 2>&1
 EOF
-)
+  )
   log "verifying Android boot properties on ${ADB_SERIAL}"
   run_remote "bash -lc ${(qqq)boot_cmd}"
 
-  host_vnc_cmd="$(vnc_banner_probe_cmd)"
-  log "verifying VNC banner on ${VNC_HOST}:${VNC_PORT}"
-  run_remote "bash -lc ${(qqq)host_vnc_cmd}"
+  if redroid_vnc_boot_enabled; then
+    host_vnc_cmd="$(vnc_banner_probe_cmd)"
+    log "verifying VNC banner on ${VNC_HOST}:${VNC_PORT}"
+    run_remote "bash -lc ${(qqq)host_vnc_cmd}"
+  fi
 }
 
 probe_virgl_srcbuild() {
@@ -1331,6 +1642,141 @@ EOF
 )
 
   log "running virgl-srcbuild-longrun from ${VIRGL_SRCBUILD_CONTROL_CONTAINER} onto ${VIRGL_SRCBUILD_IMAGE}"
+  run_guest_sudo "${guest_cmd}"
+}
+
+import_virgl_srcbuild_image() {
+  local copy_cmd
+  local guest_cmd
+  local guest_mkdir_cmd
+  local guest_mkdir_path_cmd="mkdir -p ${VIRGL_SRCBUILD_IMPORT_GUEST_DIR}"
+  local guest_merged_root="${VIRGL_SRCBUILD_IMPORT_GUEST_DIR}/merged-root"
+  local guest_merged_vendor="${guest_merged_root}/vendor"
+  local guest_mnt_system="${VIRGL_SRCBUILD_IMPORT_GUEST_DIR}/mnt-system"
+  local guest_mnt_vendor="${VIRGL_SRCBUILD_IMPORT_GUEST_DIR}/mnt-vendor"
+  local guest_mnt_vendor_subdir="${guest_mnt_vendor}/vendor"
+  local guest_compat_commit_image="${VIRGL_SRCBUILD_IMPORT_IMAGE}-compat-overlay-tmp"
+  local guest_compat_overlay_files="${VIRGL_SRCBUILD_IMPORT_COMPAT_OVERLAY_FILES}"
+  local guest_compat_ref_image="${VIRGL_SRCBUILD_IMPORT_COMPAT_REF_IMAGE}"
+  local guest_scp_cmd
+  local guest_system_copy_cmd
+  local guest_system_img="${VIRGL_SRCBUILD_IMPORT_GUEST_DIR}/system.img"
+  local guest_system_target="${GUEST_USER}@127.0.0.1:${guest_system_img}"
+  local guest_vendor_copy_cmd
+  local guest_vendor_img="${VIRGL_SRCBUILD_IMPORT_GUEST_DIR}/vendor.img"
+  local guest_vendor_target="${GUEST_USER}@127.0.0.1:${guest_vendor_img}"
+
+  validate_local_virgl_import_payload
+  vm_start
+  wait_for_guest_ssh
+  stage_local_virgl_import_payload_to_remote
+
+  guest_mkdir_cmd="$(guest_ssh_transport_cmd) ${(qqq)guest_mkdir_path_cmd}"
+  guest_scp_cmd="$(guest_scp_transport_cmd)"
+  guest_system_copy_cmd="${guest_scp_cmd} ${(qqq)VIRGL_SRCBUILD_IMPORT_HOST_SYSTEM_IMG} ${(qqq)guest_system_target}"
+  guest_vendor_copy_cmd="${guest_scp_cmd} ${(qqq)VIRGL_SRCBUILD_IMPORT_HOST_VENDOR_IMG} ${(qqq)guest_vendor_target}"
+
+  copy_cmd=$(cat <<EOF
+set -euo pipefail
+echo 'IMPORT_COPY_BEGIN'
+test -f ${(qqq)VIRGL_SRCBUILD_IMPORT_HOST_SYSTEM_IMG}
+test -f ${(qqq)VIRGL_SRCBUILD_IMPORT_HOST_VENDOR_IMG}
+${guest_mkdir_cmd}
+${guest_system_copy_cmd}
+${guest_vendor_copy_cmd}
+echo 'IMPORT_COPY_DONE'
+EOF
+)
+
+  log "copying staged Guest4K images into ${VIRGL_SRCBUILD_IMPORT_GUEST_DIR}"
+  run_remote "bash -lc ${(qqq)copy_cmd}"
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+workdir=${(qqq)VIRGL_SRCBUILD_IMPORT_GUEST_DIR}
+system_img=${(qqq)guest_system_img}
+vendor_img=${(qqq)guest_vendor_img}
+mnt_system=${(qqq)guest_mnt_system}
+mnt_vendor=${(qqq)guest_mnt_vendor}
+merged_root=${(qqq)guest_merged_root}
+compat_ref_cid=""
+compat_new_cid=""
+compat_ref_image=${(qqq)guest_compat_ref_image}
+compat_commit_image=${(qqq)guest_compat_commit_image}
+compat_overlay_files=${(qqq)guest_compat_overlay_files}
+cleanup() {
+  set +e
+  if [ -n "\${compat_ref_cid}" ]; then
+    podman umount "\${compat_ref_cid}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "\${compat_new_cid}" ]; then
+    podman umount "\${compat_new_cid}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "\${compat_ref_cid}" ] || [ -n "\${compat_new_cid}" ]; then
+    podman rm -f "\${compat_ref_cid}" "\${compat_new_cid}" >/dev/null 2>&1 || true
+  fi
+  if mountpoint -q "\${mnt_vendor}" >/dev/null 2>&1; then
+    umount "\${mnt_vendor}" >/dev/null 2>&1 || true
+  fi
+  if mountpoint -q "\${mnt_system}" >/dev/null 2>&1; then
+    umount "\${mnt_system}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "\${mnt_system}" "\${mnt_vendor}" "\${merged_root}"
+}
+trap cleanup EXIT
+echo 'IMPORT_BEGIN'
+mkdir -p "\${workdir}"
+rm -rf "\${mnt_system}" "\${mnt_vendor}" "\${merged_root}"
+mkdir -p "\${mnt_system}" "\${mnt_vendor}" "\${merged_root}"
+test -f "\${system_img}"
+test -f "\${vendor_img}"
+mount -o loop,ro ${(qqq)guest_system_img} ${(qqq)guest_mnt_system}
+mount -o loop,ro ${(qqq)guest_vendor_img} ${(qqq)guest_mnt_vendor}
+tar --xattrs -C ${(qqq)guest_mnt_system} -cf - . | tar --xattrs -C ${(qqq)guest_merged_root} -xf -
+mkdir -p ${(qqq)guest_merged_vendor}
+if [ -d ${(qqq)guest_mnt_vendor_subdir} ]; then
+  tar --xattrs -C ${(qqq)guest_mnt_vendor} -cf - vendor | tar --xattrs -C ${(qqq)guest_merged_root} -xf -
+else
+  tar --xattrs -C ${(qqq)guest_mnt_vendor} -cf - . | tar --xattrs -C ${(qqq)guest_merged_vendor} -xf -
+fi
+podman image rm -f ${VIRGL_SRCBUILD_IMPORT_IMAGE} >/dev/null 2>&1 || true
+tar --xattrs -C "\${merged_root}" -cf - . | podman import \\
+  -c 'ENTRYPOINT ["/init"]' \\
+  -c 'CMD ["qemu=1","androidboot.hardware=redroid","androidboot.use_redroid_vnc=1","redroid_gpu_mode=guest","redroid_gpu_node=/dev/dri/card0"]' \\
+  - ${VIRGL_SRCBUILD_IMPORT_IMAGE} >/dev/null
+if [ -n "\${compat_ref_image}" ]; then
+  echo 'IMPORT_COMPAT_OVERLAY_BEGIN'
+  compat_ref_cid=\$(podman create "\${compat_ref_image}")
+  compat_new_cid=\$(podman create ${VIRGL_SRCBUILD_IMPORT_IMAGE})
+  compat_ref_mnt=\$(podman mount "\${compat_ref_cid}")
+  compat_new_mnt=\$(podman mount "\${compat_new_cid}")
+  for overlay_path in \${compat_overlay_files}; do
+    rel_path=\${overlay_path#/}
+    install -D -m 0644 /dev/null "\${compat_new_mnt}/\${rel_path}"
+    cp -a "\${compat_ref_mnt}/\${rel_path}" "\${compat_new_mnt}/\${rel_path}"
+    echo "IMPORT_COMPAT_OVERLAY \${overlay_path}"
+  done
+  podman umount "\${compat_ref_cid}" >/dev/null 2>&1 || true
+  compat_ref_cid=""
+  podman umount "\${compat_new_cid}" >/dev/null 2>&1 || true
+  podman image rm -f "\${compat_commit_image}" >/dev/null 2>&1 || true
+  podman commit "\${compat_new_cid}" "\${compat_commit_image}" >/dev/null
+  podman rm -f "\${compat_new_cid}" >/dev/null 2>&1 || true
+  compat_new_cid=""
+  podman image rm -f ${VIRGL_SRCBUILD_IMPORT_IMAGE} >/dev/null 2>&1 || true
+  podman tag "\${compat_commit_image}" ${VIRGL_SRCBUILD_IMPORT_IMAGE}
+  podman image rm -f "\${compat_commit_image}" >/dev/null 2>&1 || true
+  echo 'IMPORT_COMPAT_OVERLAY_END'
+fi
+inspect_state=\$(podman image inspect ${VIRGL_SRCBUILD_IMPORT_IMAGE} --format '{{json .Config.Entrypoint}}|{{json .Config.Cmd}}')
+echo "IMPORT_READY ${VIRGL_SRCBUILD_IMPORT_IMAGE}|\${inspect_state}"
+trap - EXIT
+cleanup
+echo "IMPORT_ROLLOUT_HINT VIRGL_SRCBUILD_IMAGE=${VIRGL_SRCBUILD_IMPORT_IMAGE} zsh redroid/scripts/redroid_guest4k_107.sh virgl-srcbuild-rollout"
+EOF
+)
+
+  log "importing Guest4K image tag ${VIRGL_SRCBUILD_IMPORT_IMAGE} from staged system/vendor payload"
   run_guest_sudo "${guest_cmd}"
 }
 
@@ -1713,33 +2159,140 @@ EOF
   run_remote "bash -lc ${(qqq)host_cmd}"
 }
 
+diagnose_perf() {
+  local guest_cmd
+  local host_cmd
+
+  wait_for_guest_ssh
+  connect_adb
+  wait_for_boot
+
+  guest_cmd=$(cat <<EOF
+echo '=== guest-podman-ps ==='
+podman ps -a --format 'table {{.Names}}\\t{{.Status}}\\t{{.Image}}'
+echo '=== guest-podman-stats ==='
+podman stats --no-stream --format 'table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.MemPerc}}\\t{{.PIDs}}' ${CONTAINER} 2>/dev/null || true
+echo '=== guest-c2-nodes ==='
+ls -l /dev/dma_heap/system /dev/ion 2>/dev/null || true
+echo '=== guest-container-top ==='
+podman top ${CONTAINER} pid hpid pcpu pmem comm args 2>/dev/null || true
+EOF
+)
+
+  host_cmd=$(cat <<EOF
+adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+echo '=== host-qemu-cpu ==='
+qemu_pid=\$(ps -eo pid=,command= | awk '/[q]emu-system-aarch64/ && /hostfwd=tcp::2222-:22/ { print \$1; exit }')
+if [ -z "\${qemu_pid}" ]; then
+  qemu_pid=\$(ps -eo pid=,command= | awk '/[q]emu-system-aarch64/ && /-name guest4k/ { print \$1; exit }')
+fi
+if [ -z "\${qemu_pid}" ]; then
+  qemu_pid=\$(ps -eo pid=,command= | awk '/[q]emu-system-aarch64/ && /vm4k/ { print \$1; exit }')
+fi
+if [ -n "\${qemu_pid}" ]; then
+  echo "QEMU_PID \${qemu_pid}"
+  ps -p "\${qemu_pid}" -o pid=,ppid=,pcpu=,pmem=,etime=,args=
+  ps -L -p "\${qemu_pid}" -o pid=,tid=,psr=,pcpu=,stat=,comm= --sort=-pcpu | head -n 15
+else
+  echo 'QEMU_PID missing'
+fi
+echo '=== host-viewer-cpu ==='
+viewer_pid=\$(ps -eo pid=,command= | awk '/[v]ncviewer/ && /${VNC_HOST//./\\.}::${VNC_PORT}/ { print \$1; exit }')
+if [ -n "\${viewer_pid}" ]; then
+  echo "VIEWER_PID \${viewer_pid}"
+  ps -p "\${viewer_pid}" -o pid=,ppid=,pcpu=,pmem=,etime=,args=
+  ps -L -p "\${viewer_pid}" -o pid=,tid=,psr=,pcpu=,stat=,comm= --sort=-pcpu | head -n 15
+else
+  echo 'VIEWER_PID missing'
+fi
+echo '=== android-props ==='
+for prop in \
+  ro.vendor.hwcomposer.drm_refresh_rate_cap \
+  debug.stagefright.ccodec \
+  debug.stagefright.c2inputsurface \
+  debug.c2.use_dmabufheaps \
+  init.svc.android-hardware-media-c2-goldfish-hal-1-0 \
+  debug.hwui.renderer \
+  debug.renderengine.backend \
+  ro.hardware.egl \
+  ro.hardware.vulkan \
+  ro.hardware.gralloc
+do
+  printf '%s=' "\$prop"
+  adb -s ${ADB_SERIAL} shell getprop "\$prop" 2>/dev/null | tr -d '\r'
+done
+echo '=== android-vnc ==='
+printf 'init.svc.vncserver='
+adb -s ${ADB_SERIAL} shell getprop init.svc.vncserver 2>/dev/null | tr -d '\r'
+adb -s ${ADB_SERIAL} shell ps -A 2>/dev/null | grep -i 'vncserver' || true
+echo '=== android-c2-nodes ==='
+adb -s ${ADB_SERIAL} shell ls -l /dev/dma_heap/system /dev/ion 2>/dev/null || true
+echo '=== android-wm ==='
+adb -s ${ADB_SERIAL} shell wm size 2>/dev/null || true
+adb -s ${ADB_SERIAL} shell wm density 2>/dev/null || true
+echo '=== android-display ==='
+adb -s ${ADB_SERIAL} shell dumpsys display 2>/dev/null | grep -E 'mDisplayId=|DisplayDeviceInfo|activeModeId|refreshRate|fps|modeId|supportedModes|colorMode' | tail -n ${PERF_DISPLAY_LINES} || true
+echo '=== android-top ==='
+adb -s ${ADB_SERIAL} shell top -b -n 1 2>/dev/null | grep -E 'PID|surfaceflinger|composer|media\\.codec|mediaserver|system_server|com\\.ss\\.android\\.ugc\\.aweme|android\\.hardware\\.graphics\\.composer|vendor\\.hwcomposer' | tail -n ${PERF_TOP_LINES} || true
+echo '=== android-services ==='
+adb -s ${ADB_SERIAL} shell service list 2>/dev/null | grep -i 'media\\.c2\\|codec' || true
+echo '=== android-media-codec ==='
+adb -s ${ADB_SERIAL} shell dumpsys media.codec 2>/dev/null | grep -Ei 'goldfish|codec2|c2\\.|omx|avc|hevc|vp9|video/' | tail -n ${PERF_LOG_LINES} || true
+echo '=== android-gfxinfo ==='
+adb -s ${ADB_SERIAL} shell dumpsys gfxinfo ${DOUYIN_PACKAGE} framestats 2>/dev/null | tail -n ${PERF_LOG_LINES} || true
+echo '=== android-logcat-gfx ==='
+adb -s ${ADB_SERIAL} shell logcat -d 2>/dev/null | grep -Ei 'drm_hwcomposer|hwc|SurfaceFlinger|gralloc|codec2|CCodec|MediaCodec|goldfish|lock_ycbcr|AHardwareBuffer|BufferQueue|frame drop|jank' | tail -n ${PERF_LOG_LINES} || true
+EOF
+)
+
+  log "diagnosing Guest4K perf surfaces on ${ADB_SERIAL}"
+  run_guest_sudo "bash -lc ${(qqq)guest_cmd}"
+  run_remote "bash -lc ${(qqq)host_cmd}"
+}
+
 launch_viewer() {
   local display_env
   local kill_python_cmd
   local kill_screencap_cmd
   local kill_vnc_cmd
   local launch_cmd
+  local vncviewer_flags
 
   require_supported_viewer_mode
+  require_supported_tigervnc_profile
   display_env="XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 XAUTHORITY=\$(ls /run/user/1000/xauth_* 2>/dev/null | head -1)"
   kill_python_cmd="pkill -f '/tmp/[r]edroid_viewer.py' 2>/dev/null || true"
   kill_screencap_cmd="pkill -f 'adb -s ${ADB_SERIAL} exec-out sh -c while true; do [s]creencap; done' 2>/dev/null || true"
   kill_vnc_cmd="pkill -f '[v]ncviewer .*${VNC_HOST}::${VNC_PORT}' 2>/dev/null || true"
+  if [[ -n "${GUEST4K_TIGERVNC_FLAGS}" ]]; then
+    vncviewer_flags="${GUEST4K_TIGERVNC_FLAGS}"
+  else
+    case "${GUEST4K_TIGERVNC_PROFILE}" in
+      lossless|'')
+        vncviewer_flags="-AutoSelect=0 -PreferredEncoding=Raw -NoJPEG=1 -CustomCompressLevel=1 -CompressLevel=0 -FullColor=1"
+        ;;
+      adaptive)
+        vncviewer_flags="-AutoSelect=1 -FullColor=1"
+        ;;
+    esac
+  fi
 
   if [[ "${VIEWER_MODE}" = "python" ]]; then
     require_local_file "${LOCAL_VIEWER_PATH}" "local viewer helper"
     sync_local_file_to_remote "${LOCAL_VIEWER_PATH}" "${REMOTE_VIEWER_PATH}"
     launch_cmd="bash -lc \"export REDROID_VIEWER_ADB_SERIAL=${ADB_SERIAL} ${display_env}; nohup python3 ${REMOTE_VIEWER_PATH} > /tmp/redroid_guest4k_viewer.log 2>&1 < /dev/null &\""
   else
-    launch_cmd="bash -lc \"export ${display_env}; nohup vncviewer ${VNC_HOST}::${VNC_PORT} > /tmp/redroid_guest4k_tigervnc.log 2>&1 < /dev/null &\""
+    launch_cmd="bash -lc \"export ${display_env}; nohup vncviewer ${vncviewer_flags} ${VNC_HOST}::${VNC_PORT} > /tmp/redroid_guest4k_tigervnc.log 2>&1 < /dev/null &\""
   fi
 
   if (( DRY_RUN )); then
+    repair_guest_vnc_after_surfaceflinger_restart
     run_remote_capture "${kill_python_cmd}"
     run_remote_capture "${kill_screencap_cmd}"
     run_remote_capture "${kill_vnc_cmd}"
     run_remote_capture "${launch_cmd}"
   else
+    repair_guest_vnc_after_surfaceflinger_restart >/dev/null
     run_remote_capture "${kill_python_cmd}" >/dev/null
     run_remote_capture "${kill_screencap_cmd}" >/dev/null
     run_remote_capture "${kill_vnc_cmd}" >/dev/null
@@ -1762,7 +2315,7 @@ main() {
         usage
         exit 0
         ;;
-      vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare)
+      vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|perf-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-import|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare)
         action="$1"
         shift
         break
@@ -1779,6 +2332,8 @@ main() {
     usage >&2
     exit 1
   fi
+
+  apply_perf_preset_defaults
 
   case "${action}" in
     vm-start)
@@ -1823,11 +2378,17 @@ main() {
     audio-diagnose)
       diagnose_audio
       ;;
+    perf-diagnose)
+      diagnose_perf
+      ;;
     virgl-srcbuild-probe)
       probe_virgl_srcbuild
       ;;
     virgl-srcbuild-longrun)
       probe_virgl_srcbuild_longrun
+      ;;
+    virgl-srcbuild-import)
+      import_virgl_srcbuild_image
       ;;
     virgl-srcbuild-rollout)
       rollout_virgl_srcbuild
