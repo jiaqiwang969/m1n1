@@ -42,6 +42,7 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         stdout = result.stdout
         usage_header = stdout.splitlines()[0]
+        self.assertIn("phone-mode", usage_header)
         self.assertIn("restart-legacy", usage_header)
         self.assertIn("restart-legacy-preserve-data", usage_header)
         self.assertIn("virgl-srcbuild-probe", usage_header)
@@ -243,6 +244,20 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         self.assertIn("-v /tmp/redroid16kguestprobe-binderfs/hwbinder:/dev/hwbinder", stdout)
         self.assertIn("-v /tmp/redroid16kguestprobe-binderfs/vndbinder:/dev/vndbinder", stdout)
         self.assertNotIn("-v /dev/binderfs/binder:/dev/binder", stdout)
+
+    def test_restart_preserve_data_dry_run_keeps_mount_block_contiguous_before_entrypoint(self) -> None:
+        result = self.run_script("--dry-run", "restart-preserve-data")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            "-v /dev/dri:/dev/dri \\\n  -v /tmp/redroid16kguestprobe-binderfs/binder:/dev/binder \\",
+            stdout,
+        )
+        self.assertNotIn(
+            "-v /dev/dri:/dev/dri \\\n\n  -v /tmp/redroid16kguestprobe-binderfs/binder:/dev/binder \\",
+            stdout,
+        )
 
     def test_restart_dry_run_targets_card0_for_guest_gpu_node(self) -> None:
         result = self.run_script("--dry-run", "restart")
@@ -456,6 +471,49 @@ class RedroidGuest4K107ScriptTest(unittest.TestCase):
         stdout = result.stdout
         self.assertIn('profile=\\"powersave\\"', stdout)
         self.assertIn("adb -s 127.0.0.1:5556 shell wm size 640x1024", stdout)
+
+    def test_phone_mode_dry_run_shows_guest4k_runtime_profile_workflow(self) -> None:
+        result = self.run_script("--dry-run", "phone-mode")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("Xiaomi", stdout)
+        self.assertIn("system.build.prop", stdout)
+        self.assertIn("vendor.build.prop", stdout)
+        self.assertIn("adb_keys", stdout)
+        self.assertIn("/system/xbin", stdout)
+        self.assertIn("staging host adb public key into guest", stdout)
+        self.assertIn("settings put global device_name", stdout)
+        self.assertIn("/home/wjq/vm4k/ubuntu24k/guest_key", stdout)
+        self.assertIn("127.0.0.1:2222", stdout)
+        self.assertIn("podman create --pull=never", stdout)
+        self.assertIn("podman cp", stdout)
+        self.assertNotIn('set_prop "$system_prop" "ro.build.fingerprint"', stdout)
+        self.assertNotIn('set_prop "$system_prop" "ro.build.type"', stdout)
+        self.assertNotIn('set_prop "$system_prop" "ro.build.tags"', stdout)
+        self.assertNotIn('set_prop "$system_prop" "ro.debuggable"', stdout)
+
+    def test_phone_mode_dry_run_sets_device_name_through_device_shell_for_space_preservation(self) -> None:
+        result = self.run_script("--dry-run", "phone-mode")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn(
+            'shell \\"settings put global device_name \'Xiaomi 13\'\\"',
+            stdout,
+        )
+
+    def test_verify_dry_run_reports_runtime_shape_surface(self) -> None:
+        result = self.run_script("--dry-run", "verify")
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        stdout = result.stdout
+        self.assertIn("runtime mode", stdout)
+        self.assertIn("ro.product.brand", stdout)
+        self.assertIn("ro.product.model", stdout)
+        self.assertIn("ro.build.fingerprint", stdout)
+        self.assertIn("/system/xbin/su", stdout)
+        self.assertIn("device_name", stdout)
 
     def test_restart_dry_run_explicit_android_display_profile_overrides_perf_preset(self) -> None:
         result = self.run_script(

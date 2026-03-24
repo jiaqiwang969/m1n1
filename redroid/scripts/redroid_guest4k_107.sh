@@ -69,6 +69,14 @@ GUEST4K_TIGERVNC_PROFILE="${GUEST4K_TIGERVNC_PROFILE:-}"
 GUEST4K_TIGERVNC_FLAGS="${GUEST4K_TIGERVNC_FLAGS:-}"
 LOCAL_VIEWER_PATH="${LOCAL_VIEWER_PATH:-${REPO_ROOT}/redroid/tools/redroid_viewer.py}"
 REMOTE_VIEWER_PATH="${REMOTE_VIEWER_PATH:-/tmp/redroid_viewer.py}"
+LOCAL_PHONE_PROFILE_PATH="${LOCAL_PHONE_PROFILE_PATH:-${REPO_ROOT}/redroid/profiles/china-phone.env}"
+REMOTE_PHONE_PROFILE_DIR="${REMOTE_PHONE_PROFILE_DIR:-/tmp/redroid-phone-profile}"
+REMOTE_PHONE_SYSTEM_PROP="${REMOTE_PHONE_SYSTEM_PROP:-${REMOTE_PHONE_PROFILE_DIR}/system.build.prop}"
+REMOTE_PHONE_VENDOR_PROP="${REMOTE_PHONE_VENDOR_PROP:-${REMOTE_PHONE_PROFILE_DIR}/vendor.build.prop}"
+REMOTE_PHONE_XBIN_DIR="${REMOTE_PHONE_XBIN_DIR:-${REMOTE_PHONE_PROFILE_DIR}/system_xbin}"
+REMOTE_PHONE_ADB_KEYS="${REMOTE_PHONE_ADB_KEYS:-${REMOTE_PHONE_PROFILE_DIR}/adb_keys}"
+REMOTE_ADB_KEY_SOURCE="${REMOTE_ADB_KEY_SOURCE:-/home/${REMOTE_USER}/.android/adbkey.pub}"
+GUEST_PHONE_ADB_KEY_STAGE="${GUEST_PHONE_ADB_KEY_STAGE:-/tmp/redroid-phone-host-adbkey.pub}"
 GRAPHICS_PROFILE="${GRAPHICS_PROFILE:-guest-all-dri}"
 VKMS_CARD_NODE="${VKMS_CARD_NODE:-/dev/dri/card1}"
 GUEST_DRI_CARD_NODE="${GUEST_DRI_CARD_NODE:-/dev/dri/card0}"
@@ -90,9 +98,16 @@ REDROID_BOOT_HWCOMPOSER_DRM_REFRESH_RATE_CAP="${REDROID_BOOT_HWCOMPOSER_DRM_REFR
 REDROID_BOOT_USE_DMABUFHEAPS="${REDROID_BOOT_USE_DMABUFHEAPS:-auto}"
 DRY_RUN=0
 
+if [[ ! -f "${LOCAL_PHONE_PROFILE_PATH}" ]]; then
+  printf 'Missing phone profile: %s\n' "${LOCAL_PHONE_PROFILE_PATH}" >&2
+  exit 1
+fi
+
+source "${LOCAL_PHONE_PROFILE_PATH}"
+
 usage() {
   cat <<'EOF'
-Usage: zsh redroid/scripts/redroid_guest4k_107.sh [--dry-run] <vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|perf-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-import|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare>
+Usage: zsh redroid/scripts/redroid_guest4k_107.sh [--dry-run] <vm-start|vm-stop|vm-status|restart|restart-preserve-data|phone-mode|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|perf-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-import|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare>
 
 Actions:
   vm-start   Start the 4 KB Ubuntu microVM on the remote Asahi host
@@ -100,6 +115,7 @@ Actions:
   vm-status  Show the current microVM state on the remote Asahi host
   restart    Restart the default virgl-srcbuild Redroid container inside the 4 KB guest
   restart-preserve-data  Recreate the default virgl-srcbuild guest Redroid container without deleting its /data volume
+  phone-mode  Restart the default virgl-srcbuild guest Redroid runtime with a phone-like China persona surface
   restart-legacy  Restart the legacy alsa-hal-ranchu-exp2 Redroid container inside the 4 KB guest
   restart-legacy-preserve-data  Recreate the legacy guest Redroid container without deleting its /data volume
   status     Show VM state, guest page size, and guest container status
@@ -1367,13 +1383,162 @@ rollout_health_needs_retry() {
     ! rollout_health_has_negative_markers "${output}"
 }
 
+prepare_phone_profile() {
+  local stage_host_key_cmd
+  local guest_transport_cmd
+  local guest_stage_inner_cmd
+  local guest_cmd
+
+  guest_transport_cmd="$(guest_ssh_transport_cmd)"
+  guest_stage_inner_cmd="mkdir -p ${REMOTE_PHONE_PROFILE_DIR} && cat > ${GUEST_PHONE_ADB_KEY_STAGE} && chmod 644 ${GUEST_PHONE_ADB_KEY_STAGE}"
+  stage_host_key_cmd=$(cat <<EOF
+set -euo pipefail
+if [ ! -s '${REMOTE_ADB_KEY_SOURCE}' ]; then
+  echo 'Missing host adb public key: ${REMOTE_ADB_KEY_SOURCE}' >&2
+  exit 1
+fi
+${guest_transport_cmd} ${(qqq)guest_stage_inner_cmd} < ${(qqq)REMOTE_ADB_KEY_SOURCE}
+EOF
+)
+
+  guest_cmd=$(cat <<EOF
+set -euo pipefail
+
+profile_dir='${REMOTE_PHONE_PROFILE_DIR}'
+system_prop='${REMOTE_PHONE_SYSTEM_PROP}'
+vendor_prop='${REMOTE_PHONE_VENDOR_PROP}'
+xbin_dir='${REMOTE_PHONE_XBIN_DIR}'
+adb_keys='${REMOTE_PHONE_ADB_KEYS}'
+staged_adb_key='${GUEST_PHONE_ADB_KEY_STAGE}'
+image_container=''
+
+rm -rf "\${profile_dir}"
+mkdir -p "\${profile_dir}" "\${xbin_dir}"
+
+if [ ! -s "\${staged_adb_key}" ]; then
+  echo 'Missing staged guest adb public key: ${GUEST_PHONE_ADB_KEY_STAGE}' >&2
+  exit 1
+fi
+
+cleanup_image_container() {
+  if [ -n "\${image_container}" ]; then
+    podman rm -f "\${image_container}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_image_container EXIT
+
+image_container=\$(podman create --pull=never ${IMAGE})
+podman cp "\${image_container}:/system/build.prop" "\${system_prop}"
+podman cp "\${image_container}:/vendor/build.prop" "\${vendor_prop}"
+if podman cp "\${image_container}:/system/xbin/overlay_remounter" "\${xbin_dir}/overlay_remounter" >/dev/null 2>&1; then
+  chmod 755 "\${xbin_dir}/overlay_remounter"
+fi
+cp "\${staged_adb_key}" "\${adb_keys}"
+chmod 644 "\${adb_keys}"
+rm -f "\${xbin_dir}/su"
+
+set_prop() {
+  file="\$1"
+  key="\$2"
+  value="\$3"
+  tmp=\$(mktemp)
+  awk -v key="\$key" -v value="\$value" '
+    BEGIN { done = 0 }
+    index(\$0, key "=") == 1 {
+      print key "=" value
+      done = 1
+      next
+    }
+    { print }
+    END {
+      if (!done) {
+        print key "=" value
+      }
+    }
+  ' "\$file" > "\$tmp"
+  mv "\$tmp" "\$file"
+}
+
+set_prop "\$system_prop" "ro.product.brand" '${PHONE_BRAND}'
+set_prop "\$system_prop" "ro.product.manufacturer" '${PHONE_MANUFACTURER}'
+set_prop "\$system_prop" "ro.product.model" '${PHONE_MODEL}'
+set_prop "\$system_prop" "ro.product.device" '${PHONE_DEVICE}'
+set_prop "\$system_prop" "ro.product.name" '${PHONE_NAME}'
+set_prop "\$system_prop" "ro.product.system.brand" '${PHONE_BRAND}'
+set_prop "\$system_prop" "ro.product.system.manufacturer" '${PHONE_MANUFACTURER}'
+set_prop "\$system_prop" "ro.product.system.model" '${PHONE_MODEL}'
+set_prop "\$system_prop" "ro.product.system.device" '${PHONE_DEVICE}'
+set_prop "\$system_prop" "ro.product.system.name" '${PHONE_NAME}'
+
+set_prop "\$vendor_prop" "ro.product.vendor.brand" '${PHONE_BRAND}'
+set_prop "\$vendor_prop" "ro.product.vendor.manufacturer" '${PHONE_MANUFACTURER}'
+set_prop "\$vendor_prop" "ro.product.vendor.model" '${PHONE_MODEL}'
+set_prop "\$vendor_prop" "ro.product.vendor.device" '${PHONE_DEVICE}'
+set_prop "\$vendor_prop" "ro.product.vendor.name" '${PHONE_NAME}'
+set_prop "\$vendor_prop" "ro.product.odm.brand" '${PHONE_BRAND}'
+set_prop "\$vendor_prop" "ro.product.odm.manufacturer" '${PHONE_MANUFACTURER}'
+set_prop "\$vendor_prop" "ro.product.odm.model" '${PHONE_MODEL}'
+set_prop "\$vendor_prop" "ro.product.odm.device" '${PHONE_DEVICE}'
+set_prop "\$vendor_prop" "ro.product.odm.name" '${PHONE_NAME}'
+
+trap - EXIT
+cleanup_image_container
+EOF
+)
+
+  log "staging host adb public key into guest"
+  run_remote "bash -lc ${(qqq)stage_host_key_cmd}"
+  log "preparing guest phone profile ${PHONE_PROFILE_ID} (${PHONE_BRAND} ${PHONE_DEVICE_NAME})"
+  run_guest_sudo "${guest_cmd}"
+}
+
+show_runtime_mode() {
+  local guest_cmd
+
+  guest_cmd=$(cat <<EOF
+if podman inspect ${CONTAINER} --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx '/system/build.prop'; then
+  echo "phone-mode (${PHONE_PROFILE_ID})"
+else
+  echo 'baseline'
+fi
+EOF
+)
+
+  run_guest_sudo "bash -lc ${(qqq)guest_cmd}"
+}
+
+set_device_name() {
+  local cmd
+
+  cmd=$(cat <<EOF
+adb connect ${ADB_SERIAL} >/dev/null 2>&1 || true
+adb -s ${ADB_SERIAL} shell "settings put global device_name '${PHONE_DEVICE_NAME}'"
+EOF
+)
+
+  log "setting device_name to ${PHONE_DEVICE_NAME}"
+  run_remote "bash -lc ${(qqq)cmd}"
+}
+
+activate_phone_mode() {
+  vm_start
+  wait_for_guest_ssh
+  prepare_phone_profile
+  restart_redroid "${IMAGE}" 0 phone
+  set_device_name
+  verify_runtime
+}
+
 restart_redroid() {
   local image="${1:-${IMAGE}}"
   local preserve_data="${2:-0}"
+  local runtime_mode="${3:-baseline}"
   local binder_root
   local guest_cmd
   local graphics_prep_cmd
   local graphics_mounts
+  local phone_mounts=""
+  local runtime_mounts
   local audio_prep_cmd
   local volume_reset_cmd="podman volume rm -f ${VOLUME_NAME} >/dev/null 2>&1 || true"
   local android_boot_args
@@ -1386,8 +1551,21 @@ restart_redroid() {
   audio_prep_cmd="$(audio_prepare_cmd)"
   binder_root="$(guest_container_binderfs_root_path "${CONTAINER}")"
   android_boot_args="$(default_android_boot_args)"
+  if [[ "${runtime_mode}" == "phone" ]]; then
+    phone_mounts=$(cat <<EOF
+  -v ${REMOTE_PHONE_SYSTEM_PROP}:/system/build.prop:ro \\
+  -v ${REMOTE_PHONE_VENDOR_PROP}:/vendor/build.prop:ro \\
+  -v ${REMOTE_PHONE_XBIN_DIR}:/system/xbin:ro \\
+  -v ${REMOTE_PHONE_ADB_KEYS}:/product/etc/security/adb_keys:ro \\
+EOF
+)
+  fi
   if [[ "${preserve_data}" == "1" ]]; then
     volume_reset_cmd=":"
+  fi
+  runtime_mounts="${graphics_mounts}"$'\n'
+  if [[ -n "${phone_mounts}" ]]; then
+    runtime_mounts+="${phone_mounts}"$'\n'
   fi
 
   guest_cmd=$(cat <<EOF
@@ -1419,8 +1597,7 @@ ${audio_prep_cmd}
 podman run -d --name ${CONTAINER} --pull=never --privileged --security-opt label=disable --security-opt unmask=all \\
   -p 5555:5555/tcp -p 5900:5900/tcp \\
   -v ${VOLUME_NAME}:/data \\
-${graphics_mounts}
-  -v ${binder_root}/binder:/dev/binder \\
+${runtime_mounts}  -v ${binder_root}/binder:/dev/binder \\
   -v ${binder_root}/hwbinder:/dev/hwbinder \\
   -v ${binder_root}/vndbinder:/dev/vndbinder \\
   --entrypoint /init ${image} \\
@@ -1430,6 +1607,7 @@ EOF
 )
 
   log "graphics profile: ${GRAPHICS_PROFILE}"
+  log "runtime mode: ${runtime_mode}"
   log "restarting guest Redroid container ${CONTAINER} with image ${image}"
   run_guest_sudo "${guest_cmd}"
   connect_adb
@@ -1446,6 +1624,8 @@ show_status() {
   run_guest "getconf PAGE_SIZE"
 
   log "configured graphics profile: ${GRAPHICS_PROFILE}"
+  log "runtime mode"
+  show_runtime_mode
   log "showing guest container status"
   run_guest_sudo "podman ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 }
@@ -1454,6 +1634,9 @@ verify_runtime() {
   local guest_ssh_cmd
   local host_vnc_cmd
   local boot_cmd
+  local app_props_cmd
+  local su_visibility_cmd
+  local device_name_cmd
 
   wait_for_guest_ssh
 
@@ -1469,12 +1652,35 @@ EOF
   wait_for_boot
   post_boot_prepare
 
+  app_props_cmd=$(cat <<EOF
+for p in ro.product.brand ro.product.manufacturer ro.product.model ro.product.device ro.build.fingerprint ro.build.type ro.build.tags ro.debuggable; do
+  printf '%s=' "\$p"
+  getprop "\$p"
+done
+EOF
+  )
+  su_visibility_cmd=$(cat <<'EOF'
+ls -l /system/xbin/su 2>/dev/null || echo /system/xbin/su hidden
+EOF
+  )
+  device_name_cmd=$(cat <<'EOF'
+settings get global device_name
+EOF
+  )
   boot_cmd=$(cat <<EOF
 timeout 5 adb -s ${ADB_SERIAL} shell getprop sys.boot_completed 2>&1
 EOF
   )
+  log "runtime mode"
+  show_runtime_mode
   log "verifying Android boot properties on ${ADB_SERIAL}"
   run_remote "bash -lc ${(qqq)boot_cmd}"
+  log "app-facing device props"
+  run_remote "adb -s ${ADB_SERIAL} shell ${(qqq)app_props_cmd}"
+  log "su visibility"
+  run_remote "adb -s ${ADB_SERIAL} shell ${(qqq)su_visibility_cmd}"
+  log "device_name"
+  run_remote "adb -s ${ADB_SERIAL} shell ${(qqq)device_name_cmd}"
 
   if redroid_vnc_boot_enabled; then
     host_vnc_cmd="$(vnc_banner_probe_cmd)"
@@ -2315,7 +2521,7 @@ main() {
         usage
         exit 0
         ;;
-      vm-start|vm-stop|vm-status|restart|restart-preserve-data|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|perf-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-import|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare)
+      vm-start|vm-stop|vm-status|restart|restart-preserve-data|phone-mode|restart-legacy|restart-legacy-preserve-data|status|verify|viewer|douyin-install|douyin-start|douyin-diagnose|audio-diagnose|perf-diagnose|virgl-srcbuild-probe|virgl-srcbuild-longrun|virgl-srcbuild-import|virgl-srcbuild-rollout|virgl-srcbuild-rollback|virgl-fingerprint-compare)
         action="$1"
         shift
         break
@@ -2350,6 +2556,9 @@ main() {
       ;;
     restart-preserve-data)
       restart_redroid "${IMAGE}" 1
+      ;;
+    phone-mode)
+      activate_phone_mode
       ;;
     restart-legacy)
       restart_redroid "${LEGACY_IMAGE}" 0

@@ -136,6 +136,7 @@ Supported actions:
 - `vm-status`
 - `restart`
 - `restart-preserve-data`
+- `phone-mode`
 - `restart-legacy`
 - `restart-legacy-preserve-data`
 - `status`
@@ -162,6 +163,44 @@ If installed app state should be preserved:
 ```bash
 zsh redroid/scripts/redroid_guest4k_107.sh restart-preserve-data
 ```
+
+Optional China-phone persona shaping:
+
+```bash
+SUDO_PASS=123123 zsh redroid/scripts/redroid_guest4k_107.sh phone-mode
+```
+
+This is a reversible Stage 1 app-facing shaping pass for China-app testing on the
+current `Guest4K` mainline.
+
+What it does:
+
+- keeps the normal `Guest4K` boot path and virgl mainline image
+- bind-mounts shaped `system.build.prop` and `vendor.build.prop`
+- hides `/system/xbin/su`
+- stages trusted `adb_keys`
+- writes `settings put global device_name 'Xiaomi 13'`
+
+What it intentionally does not do in Stage 1:
+
+- it does not change `ro.build.fingerprint`
+- it does not change `ro.build.type`, `ro.build.tags`, or `ro.debuggable`
+- it does not add real telephony, TEE, or hardware attestation
+- it does not replace baseline `restart` as the rollback-safe default
+
+To inspect the exposed app-facing surface after `phone-mode`, run:
+
+```bash
+zsh redroid/scripts/redroid_guest4k_107.sh verify
+```
+
+The expanded `verify` output now includes:
+
+- runtime mode
+- `ro.product.*` identity surface
+- `ro.build.*` and `ro.debuggable`
+- `/system/xbin/su` visibility
+- `settings get global device_name`
 
 If the promoted virgl mainline needs to be backed out quickly, use the explicit
 legacy fallback:

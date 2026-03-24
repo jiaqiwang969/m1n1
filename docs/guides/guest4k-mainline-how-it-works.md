@@ -232,6 +232,36 @@ zsh redroid/scripts/redroid_guest4k_107.sh viewer
 zsh redroid/scripts/redroid_guest4k_107.sh douyin-start
 ```
 
+Optional phone persona flow:
+
+```bash
+export SUDO_PASS='...'
+
+zsh redroid/scripts/redroid_guest4k_107.sh phone-mode
+zsh redroid/scripts/redroid_guest4k_107.sh verify
+zsh redroid/scripts/redroid_guest4k_107.sh viewer
+zsh redroid/scripts/redroid_guest4k_107.sh douyin-start
+```
+
+Important operator semantics:
+
+- baseline `restart` and `restart-preserve-data` remain the default rollback-safe path
+- `phone-mode` is optional and reversible
+- `phone-mode` stays on the same `Guest4K` mainline container path, it does not revive the old direct-host branch
+
+Stage 1 shaping scope is intentionally narrow:
+
+- shape `ro.product.*`, `ro.product.system.*`, `ro.product.vendor.*`, and `ro.product.odm.*`
+- set a phone-like `device_name`
+- hide `/system/xbin/su`
+
+Stage 1 does not try to hide the full boot/runtime substrate:
+
+- `ro.build.fingerprint` is intentionally left unchanged
+- `ro.build.type`, `ro.build.tags`, and `ro.debuggable` are intentionally left unchanged
+- boot-critical `redroid` / `qemu=1` traits are intentionally left unchanged
+- no telephony, TEE, Play Integrity, or hardware attestation spoofing is attempted here
+
 If the promoted mainline needs to be backed out quickly:
 
 ```bash
@@ -255,6 +285,8 @@ When changing this stack, preserve these properties unless there is a very stron
 - TigerVNC as default viewer
 - host PipeWire as real audio sink
 - srcbuild virgl as the default restart surface
+- baseline `restart` as the default rollback-safe surface
+- `phone-mode` only as an optional app-facing shaping layer
 - the old `ANGLE + SwiftShader` line only as explicit legacy fallback
 - main operator entrypoint:
   `redroid/scripts/redroid_guest4k_107.sh`
